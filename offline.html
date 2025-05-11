@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline - filmy Movie Browser</title>
+  <link rel="stylesheet" href="css/filmy.css">
+</head>
+<body>
+  <div class="offline-container">
+    <h1>You're Offline</h1>
+    <p>filmy Movie Browser needs an internet connection to fetch new movies.</p>
+    <p>You can still browse your saved movies.</p>
+    <button id="retry-button">Retry Connection</button>
+  </div>
+  <script>
+    document.getElementById('retry-button').addEventListener('click', () => {
+      window.location.reload();
+    });
+  </script>
+</body>
+</html>

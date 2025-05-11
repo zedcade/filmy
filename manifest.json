@@ -1,0 +1,55 @@
+{
+    "name": "filmy Movie Browser",
+    "short_name": "filmy",
+    "description": "Browse and manage your movie collection",
+    "start_url": "./",
+    "display": "standalone",
+    "background_color": "#1e1e1e",
+    "theme_color": "#1e1e1e",
+    "icons": [
+        {
+            "src": "img/filmy192.webp",
+            "sizes": "192x192",
+            "type": "image/webp",
+            "purpose": "any"
+        },
+        {
+            "src": "img/filmy384.webp",
+            "sizes": "384x384",
+            "type": "image/webp",
+            "purpose": "any"
+        },
+        {
+            "src": "img/filmy512.webp",
+            "sizes": "512x512",
+            "type": "image/webp",
+            "purpose": "any"
+        },
+        {
+            "src": "img/filmy1024m.webp",
+            "sizes": "1024x1024",
+            "type": "image/webp",
+            "purpose": "maskable"
+        },
+        {
+            "src": "img/filmy1024.svg",
+            "sizes": "1024x1024",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        }
+    ],
+    "screenshots": [
+        {
+            "src": "img/screenshot-desktop.webp",
+            "sizes": "1280x800",
+            "type": "image/webp",
+            "form_factor": "wide"
+        },
+        {
+            "src": "img/screenshot-mobile.webp",
+            "sizes": "750x1334",
+            "type": "image/webp",
+            "form_factor": "narrow"
+        }
+    ]
+}
