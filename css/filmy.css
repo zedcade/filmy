@@ -246,7 +246,7 @@ body {
     transform: translate(-50%, -50%);
     background-color: var(--accent-color);
     color: white;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     pointer-events: none;
     line-height: 20px;
     width: 30px;
@@ -4150,7 +4150,7 @@ margin-left: auto;
     padding: 0;
     text-align:center;
     align-items: center;
-    max-height: 475px;
+    max-height: 575px;
     min-width: 120px;
     overflow-y: auto;
     justify-items: center;

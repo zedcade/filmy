@@ -695,6 +695,7 @@ const backgroundPeopleQueue = {
     if (!this._isProcessing) {
       this._initialQueueSize = this._queue.length;
       this._totalPeopleCount = 0; // Reset total count
+      this._totalProcessedCount = 0; 
       // Calculate total from all tasks in queue
       for (let task of this._queue) {
         this._totalPeopleCount += task.personIDs.length;
@@ -746,20 +747,58 @@ const backgroundPeopleQueue = {
       this._currentTask = { personIDs, imdbID };
       console.log(`Background processing ${personIDs.length} people for ${imdbID}`);
 
-      let peopleDetails = await queryTMDB(
-        personIDs.map(id => ({ tmdbID: id })),
-        'details',
-        'person',
-        true
-      );
+      // First check which people already exist in the database
+      const existingPeople = new Map();
+      const transaction = db.transaction(['people'], 'readonly');
+      const store = transaction.objectStore('people');
 
-      if (peopleDetails?.length > 0) {
-        let transformedPeople = peopleDetails.map(({ id, ...rest }) => ({
-          ...rest,
-          personID: id,
-          timestamp: Date.now(),
+      // Get existing people in batches
+      const batchSize = 50;
+      for (let i = 0; i < personIDs.length; i += batchSize) {
+        const batch = personIDs.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (id) => {
+          try {
+            const record = await new Promise((resolve, reject) => {
+              const request = store.get(id);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = (e) => reject(e.target.error);
+            });
+
+            if (record) {
+              existingPeople.set(id, record);
+            }
+          } catch (e) {
+            console.warn(`Error checking person ${id}:`, e);
+          }
         }));
-        await saveToDatabase(db, transformedPeople, 'people');
+      }
+
+      // Filter out people who are already in the database and not stale
+      const now = Date.now();
+      const maxAge = 14 * 24 * 60 * 60 * 1000; // 14 days in ms
+      const personIDsToProcess = personIDs.filter(pid => {
+        const record = existingPeople.get(pid);
+        return !record || !record.timestamp || (now - record.timestamp > maxAge);
+      });
+
+      console.log(`Filtered out ${personIDs.length - personIDsToProcess.length} existing/fresh records`);
+
+      if (personIDsToProcess.length > 0) {
+        let peopleDetails = await queryTMDB(
+          personIDsToProcess.map(id => ({ tmdbID: id })),
+          'details',
+          'person',
+          true
+        );
+
+        if (peopleDetails?.length > 0) {
+          let transformedPeople = peopleDetails.map(({ id, ...rest }) => ({
+            ...rest,
+            personID: id,
+            timestamp: Date.now(),
+          }));
+          await saveToDatabase(db, transformedPeople, 'people');
+        }
       }
     } catch (error) {
       console.error("Background processing failed:", error);
@@ -8672,19 +8711,6 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
 
           // Update the dropdown UI
           refreshOmdbKeyDropdownDB(currentSettingsRef);
-
-          // IMPORTANT: Manually add the option to ensure it's available immediately
-          const newOption = document.createElement('option');
-          newOption.value = newKey;
-          newOption.textContent = newKey;
-
-          // Insert before the "Add Key..." option
-          const addKeyOption = Array.from(omdbSelectElement.options).find(opt => opt.value === "__add_new__");
-          if (addKeyOption) {
-            omdbSelectElement.insertBefore(newOption, addKeyOption);
-          } else {
-            omdbSelectElement.appendChild(newOption);
-          }
 
           // Select the newly added key
           omdbSelectElement.value = newKey;
