@@ -65,7 +65,7 @@ This is a Vibe Coding experiment, building a web app from scratch without writin
 ## **Installation**
 
 1. Clone the repository  
-   `git clone https://github.com/yourusername/filmy.git`  
+   `git clone https://github.com/zedcade/filmy.git`  
 2. You can use Filmy in two ways:  
    1. Simple method: Open index.html directly in your browser  
    2. Web server method (recommended for full PWA features):  
