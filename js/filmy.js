@@ -3273,113 +3273,6 @@ function initializeDB(dbInstance, transaction, oldVersion) {
     });
 }
 
-/**
- * Backup the entire IndexedDB database as a JSON file.
- */
-async function backupDatabase(db) {
-  try {
-    const objectStoreNames = Array.from(db.objectStoreNames);
-    if (objectStoreNames.length === 0) {
-      showNotification("No data found in the database to back up.", false);
-      return;
-    }
-
-    const backupData = {
-      metadata: {
-        timestamp: new Date().toISOString(),
-        databaseVersion: db.version,
-      },
-    };
-
-    const totalStores = objectStoreNames.length;
-    let currentStore = 0;
-    const BATCH_SIZE = 1000; // Process 1000 records at a time
-
-    for (const storeName of objectStoreNames) {
-      currentStore++;
-      showNotification(`Backing up "${storeName}" (${Math.round((currentStore / totalStores) * 100)}%)`, true);
-
-      const transaction = db.transaction([storeName], "readonly");
-      const store = transaction.objectStore(storeName);
-      backupData[storeName] = [];
-
-      // Get the total count first
-      const countRequest = store.count();
-      const totalRecords = await new Promise((resolve, reject) => {
-        countRequest.onsuccess = () => resolve(countRequest.result);
-        countRequest.onerror = () => reject(new Error(`Error counting records in '${storeName}': ${countRequest.error}`));
-      });
-
-      if (totalRecords === 0) continue;
-
-      // Use cursor to process in batches
-      let processedRecords = 0;
-      let currentBatch = [];
-
-      await new Promise((resolve, reject) => {
-        const cursorRequest = store.openCursor();
-        
-        cursorRequest.onsuccess = (event) => {
-          const cursor = event.target.result;
-          
-          if (cursor) {
-            currentBatch.push(cursor.value);
-            processedRecords++;
-            
-            // Update progress periodically
-            if (processedRecords % 500 === 0) {
-              const percent = Math.round((processedRecords / totalRecords) * 100);
-              showNotification(`Backing up "${storeName}" (${percent}%, ${processedRecords}/${totalRecords})`, true);
-            }
-            
-            // When batch is full, add to backup data
-            if (currentBatch.length >= BATCH_SIZE) {
-              backupData[storeName].push(...currentBatch);
-              currentBatch = [];
-            }
-            
-            cursor.continue();
-          } else {
-            // Add any remaining records in the last batch
-            if (currentBatch.length > 0) {
-              backupData[storeName].push(...currentBatch);
-            }
-            resolve();
-          }
-        };
-        
-        cursorRequest.onerror = (event) => {
-          reject(new Error(`Error fetching data from '${storeName}': ${event.target.error}`));
-        };
-      });
-    }
-
-    showNotification("Finalizing backup...", true);
-
-    const jsonData = JSON.stringify(backupData, null, 2);
-    const timestamp = new Date().toISOString().replace(/[-:T]/g, "_").split(".")[0];
-    const filename = `${timestamp}_filmy-db-backup.json`;
-
-    const blob = new Blob([jsonData], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-
-    URL.revokeObjectURL(url);
-
-    showNotification(`Database backed up successfully as "${filename}"`, false);
-
-  } catch (error) {
-    console.error("Error during backup:", error);
-    showNotification("An unexpected error occurred during the backup process.", false);
-  }
-}
-
 async function runScheduledBackup(db, userSettings) {
   if (!userSettings.backup_active) return;
 
@@ -3415,134 +3308,635 @@ async function runScheduledBackup(db, userSettings) {
 }
 
 /**
- * Restore the entire IndexedDB database from a JSON file.
- * @param {File} file - The uploaded JSON file containing backup data.
- * @param {IDBDatabase} db - The already-opened IndexedDB instance.
+ * Backup the entire IndexedDB database as a JSON file.
  */
-async function restoreDatabase(file, db) {
+async function backupDatabase(db) {
   try {
-    // Step 1: Read and parse the backup file.
-    const backupData = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const data = JSON.parse(event.target.result);
-          resolve(data);
-        } catch (err) {
-          reject(new Error("Invalid JSON format."));
-        }
-      };
-      reader.onerror = () => reject(new Error("Error reading the uploaded file."));
-      reader.readAsText(file);
-    });
-
-    if (!backupData || typeof backupData !== "object") {
-      showNotification("The uploaded file contains invalid backup data.", false);
+    const objectStoreNames = Array.from(db.objectStoreNames);
+    if (objectStoreNames.length === 0) {
+      showNotification("No data found in the database to back up.", false);
       return;
     }
 
-    // Step 2: Handle metadata if present.
-    if ("metadata" in backupData) {
-      const metadata = backupData.metadata;
-      console.log("Backup Metadata:", metadata);
-      if (metadata.databaseVersion !== db.version) {
-        showNotification(
-          `Warning: Backup DB version (${metadata.databaseVersion}) ≠ Current DB version (${db.version})`,
-          false
-        );
-      }
-      delete backupData.metadata;
-    }
+    const timestamp = new Date().toISOString().replace(/[-:T]/g, "_").split(".")[0];
+    const MAX_FILE_SIZE = 400 * 1024 * 1024; // 400MB per file
 
-    // Step 3: Restore each object store with chunked progress notification.
-    const storeEntries = Object.entries(backupData);
-    const totalStores = storeEntries.length;
+    // Create metadata for the entire backup
+    const backupMetadata = {
+      timestamp,
+      databaseVersion: db.version,
+      stores: objectStoreNames,
+      totalFiles: 0,
+      totalRecords: 0,
+      totalStores: objectStoreNames.length
+    };
+
+    let totalRecords = 0;
+    let fileIndex = 1; // Start from 1 instead of 0
+    const totalStores = objectStoreNames.length;
     let currentStore = 0;
+    let currentFile = {
+      metadata: { ...backupMetadata },
+      data: {}
+    };
 
-    for (const [storeName, records] of storeEntries) {
+    // Process each store completely before moving to the next
+    for (const storeName of objectStoreNames) {
       currentStore++;
-      const storePercent = Math.round((currentStore / totalStores) * 100);
 
-      if (!Array.isArray(records)) {
-        console.warn(`Skipping invalid data for store "${storeName}".`);
-        continue;
+      // Show detailed notification with store count and percentage
+      const storePercent = Math.round(((currentStore - 1) / totalStores) * 100);
+      showNotification(`Store ${currentStore}/${totalStores}: "${storeName}" (0% complete) - Overall: ${storePercent}% complete - File ${fileIndex}`, true);
+
+      // Get all records for this store
+      const transaction = db.transaction([storeName], "readonly");
+      const store = transaction.objectStore(storeName);
+
+      // Get the total count first
+      const countRequest = store.count();
+      const storeRecordCount = await new Promise((resolve, reject) => {
+        countRequest.onsuccess = () => resolve(countRequest.result);
+        countRequest.onerror = () => reject(new Error(`Error counting records in '${storeName}': ${countRequest.error}`));
+      });
+
+      if (storeRecordCount === 0) continue;
+
+      // Initialize store in current file
+      if (!currentFile.data[storeName]) {
+        currentFile.data[storeName] = [];
       }
 
-      // Skip stores that no longer exist.
-      if (!db.objectStoreNames.contains(storeName)) {
-        console.warn(`Skipping store "${storeName}" as it does not exist in the current database.`);
-        continue;
-      }
+      // Process all records for this store
+      let processedRecords = 0;
+      let allRecords = [];
 
-      showNotification(`Restoring "${storeName}" (0% of ${records.length} records)`, true);
+      // Fetch all records with progress reporting
+      await new Promise((resolve, reject) => {
+        const cursorRequest = store.openCursor();
 
-      // Clear the store before restoring
-      await new Promise((resolve) => {
-        const clearReq = db
-          .transaction([storeName], "readwrite")
-          .objectStore(storeName)
-          .clear();
-        clearReq.onsuccess = resolve;
-        clearReq.onerror = () => {
-          console.warn(`Failed to clear store "${storeName}"`);
-          resolve(); // Continue anyway
+        cursorRequest.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            allRecords.push(cursor.value);
+            processedRecords++;
+
+            // Report progress every 500 records
+            if (processedRecords % 500 === 0) {
+              const storePercent = Math.round((processedRecords / storeRecordCount) * 100);
+              const overallPercent = Math.round(((currentStore - 1) / totalStores + (processedRecords / storeRecordCount) / totalStores) * 100);
+              showNotification(`Store ${currentStore}/${totalStores}: "${storeName}" - ${processedRecords}/${storeRecordCount} records (${storePercent}%) - Overall: ${overallPercent}% complete - File ${fileIndex}`, true);
+            }
+
+            cursor.continue();
+          } else {
+            // Final progress update
+            const storePercent = Math.round((processedRecords / storeRecordCount) * 100);
+            const overallPercent = Math.round(((currentStore - 1) / totalStores + (processedRecords / storeRecordCount) / totalStores) * 100);
+            showNotification(`Store ${currentStore}/${totalStores}: "${storeName}" - ${processedRecords}/${storeRecordCount} records (${storePercent}%) - Overall: ${overallPercent}% complete - File ${fileIndex}`, true);
+            resolve();
+          }
+        };
+
+        cursorRequest.onerror = (event) => {
+          reject(event.target.error);
         };
       });
 
-      // Chunked restore
-      const chunkSize = 500;
-      let restored = 0;
-      while (restored < records.length) {
-        const chunk = records.slice(restored, restored + chunkSize);
-        await new Promise(resolve => {
-          const transaction = db.transaction([storeName], "readwrite");
-          const store = transaction.objectStore(storeName);
+      totalRecords += allRecords.length;
 
-          let completed = 0;
-          let hadError = false;
+      // Check if adding this store would exceed the file size limit
+      currentFile.data[storeName] = allRecords;
+      const estimatedSize = JSON.stringify(currentFile).length;
 
-          chunk.forEach(record => {
-            try {
-              const req = store.put(record);
-              req.onsuccess = () => {
-                completed++;
-                if (completed === chunk.length) resolve();
-              };
-              req.onerror = (event) => {
-                hadError = true;
-                console.warn(`Error restoring record in "${storeName}": ${event.target.error}`);
-                completed++;
-                if (completed === chunk.length) resolve();
-              };
-            } catch (error) {
-              hadError = true;
-              completed++;
-              if (completed === chunk.length) resolve();
+      if (estimatedSize > MAX_FILE_SIZE && Object.keys(currentFile.data).length > 1) {
+        // If this store alone exceeds the limit and there are other stores already in the file
+        // Save the current file without this store
+        delete currentFile.data[storeName];
+
+        // Update metadata
+        currentFile.metadata.fileIndex = fileIndex;
+        currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
+
+        // Save current file
+        const jsonData = JSON.stringify(currentFile);
+        const blob = new Blob([jsonData], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+
+        // Add a small delay to prevent browser from being overwhelmed with downloads
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        // Start a new file with just this store
+        fileIndex++;
+        currentFile = {
+          metadata: { ...backupMetadata },
+          data: {
+            [storeName]: allRecords
+          }
+        };
+      } else if (estimatedSize > MAX_FILE_SIZE) {
+        // If this store alone exceeds the limit, we need to split it across multiple files
+        // Chunk the array into smaller arrays
+        const chunks = [];
+        const chunkSize = Math.ceil(allRecords.length / Math.ceil(estimatedSize / MAX_FILE_SIZE));
+        for (let i = 0; i < allRecords.length; i += chunkSize) {
+          chunks.push(allRecords.slice(i, i + chunkSize));
+        }
+
+        for (let i = 0; i < chunks.length; i++) {
+          // For first chunk, use current file if it's empty
+          if (i === 0 && Object.keys(currentFile.data).length === 1 && currentFile.data[storeName].length === 0) {
+            currentFile.data[storeName] = chunks[i];
+          } else {
+            // Save current file if not empty
+            if (Object.keys(currentFile.data).some(store => currentFile.data[store].length > 0)) {
+              currentFile.metadata.fileIndex = fileIndex;
+              currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
+
+              const jsonData = JSON.stringify(currentFile);
+              const blob = new Blob([jsonData], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+
+              const anchor = document.createElement("a");
+              anchor.href = url;
+              anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
+              document.body.appendChild(anchor);
+              anchor.click();
+              document.body.removeChild(anchor);
+              URL.revokeObjectURL(url);
+
+              // Add a small delay to prevent browser from being overwhelmed with downloads
+              await new Promise(resolve => setTimeout(resolve, 300));
+
+              fileIndex++;
             }
-          });
 
-          transaction.onerror = (event) => {
-            console.error(`Transaction error restoring chunk in "${storeName}":`, event.target.error);
-            resolve(); // Continue with next chunk
-          };
-        });
+            // Create new file with this chunk
+            currentFile = {
+              metadata: { ...backupMetadata },
+              data: {
+                [storeName]: chunks[i]
+              }
+            };
+          }
 
-        restored += chunk.length;
-        const percent = Math.round((restored / records.length) * 100);
-        showNotification(
-          `Restoring "${storeName}" (${percent}% of ${records.length} records, ${storePercent}% stores)`,
-          true
-        );
-        // Yield to UI
-        await new Promise(res => setTimeout(res, 0));
+          // If this is not the last chunk, save the file
+          if (i < chunks.length - 1) {
+            currentFile.metadata.fileIndex = fileIndex;
+            currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
+            currentFile.metadata.storeInfo = {
+              [storeName]: {
+                totalChunks: chunks.length,
+                currentChunk: i + 1,
+                totalRecords: allRecords.length
+              }
+            };
+
+            const jsonData = JSON.stringify(currentFile);
+            const blob = new Blob([jsonData], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
+
+            // Add a small delay to prevent browser from being overwhelmed with downloads
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            fileIndex++;
+          }
+        }
       }
-      console.log(`Restored data for store "${storeName}".`);
+
+      // If we've reached the last store, save the current file
+      if (currentStore === totalStores) {
+        currentFile.metadata.fileIndex = fileIndex;
+        currentFile.metadata.totalFiles = fileIndex;
+        currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
+
+        const jsonData = JSON.stringify(currentFile);
+        const blob = new Blob([jsonData], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+
+        // Add a small delay to prevent browser from being overwhelmed with downloads
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
     }
 
-    showNotification("Restore completed successfully!", false);
+    showNotification(`Database backed up successfully: ${totalRecords} records in ${fileIndex} files with timestamp "${timestamp}"`, false);
   } catch (error) {
-    console.error(`Error during restore: ${error.message}`);
-    showNotification("An error occurred during the restore process.", false);
+    console.error("Error during backup:", error);
+    showNotification(`Backup error: ${error.message}`, false);
+  }
+}
+
+async function restoreDatabase(files, db) {
+  try {
+    // Sort files to ensure they're processed in order
+    const sortedFiles = Array.from(files).sort((a, b) => {
+      return a.name.localeCompare(b.name);
+    });
+
+    if (sortedFiles.length === 0) {
+      showNotification("No backup files selected.", false);
+      return false;
+    }
+
+    // Find the file with the highest non-zero totalFiles value
+    let expectedTotalFiles = 0;
+    for (const file of sortedFiles) {
+      const fileContent = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            resolve(JSON.parse(event.target.result));
+          } catch (err) {
+            reject(new Error(`Invalid JSON format in file ${file.name}.`));
+          }
+        };
+        reader.onerror = () => reject(new Error(`Error reading file ${file.name}.`));
+        reader.readAsText(file);
+      });
+      
+      if (fileContent.metadata && fileContent.metadata.totalFiles > expectedTotalFiles) {
+        expectedTotalFiles = fileContent.metadata.totalFiles;
+      }
+    }
+
+    // Check if we have all required files
+    if (expectedTotalFiles === 0) {
+      showNotification("Missing the final backup file which contains total file count. Please select all backup files.", false);
+      return false;
+    } else if (expectedTotalFiles > sortedFiles.length) {
+      showNotification(`This backup consists of ${expectedTotalFiles} files, but only ${sortedFiles.length} were selected. Please select all backup files.`, false);
+      return false;
+    }
+
+    // Read the first file to get metadata for version check
+    const firstFileContent = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          resolve(JSON.parse(event.target.result));
+        } catch (err) {
+          reject(new Error("Invalid JSON format in first file."));
+        }
+      };
+      reader.onerror = () => reject(new Error("Error reading the first file."));
+      reader.readAsText(sortedFiles[0]);
+    });
+
+    const metadata = firstFileContent.metadata;
+    if (!metadata) {
+      showNotification("Invalid backup file format. Missing metadata.", false);
+      return false;
+    }
+
+    // Check database version
+    if (metadata.databaseVersion !== db.version) {
+      showNotification(
+        `Warning: Backup DB version (${metadata.databaseVersion}) ≠ Current DB version (${db.version})`,
+        false
+      );
+    }
+
+    // Track which stores we've already processed to handle split stores
+    const processedStores = new Set();
+    const storeChunks = {};
+
+    // Count total stores across all files for progress tracking
+    let totalStores = 0;
+    let allStoreNames = new Set();
+
+    // First pass to count unique stores
+    for (let i = 0; i < sortedFiles.length; i++) {
+      const fileContent = i === 0 ? firstFileContent : await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            resolve(JSON.parse(event.target.result));
+          } catch (err) {
+            reject(new Error(`Invalid JSON format in file ${sortedFiles[i].name}.`));
+          }
+        };
+        reader.onerror = () => reject(new Error(`Error reading file ${sortedFiles[i].name}.`));
+        reader.readAsText(sortedFiles[i]);
+      });
+
+      if (fileContent.data) {
+        Object.keys(fileContent.data).forEach(storeName => {
+          if (!allStoreNames.has(storeName)) {
+            allStoreNames.add(storeName);
+            totalStores++;
+          }
+        });
+      }
+    }
+
+    let currentStoreIndex = 0;
+
+    showNotification(`Found backup with ${sortedFiles.length} files. Starting restore...`, true);
+
+    // Process each file
+    for (let i = 0; i < sortedFiles.length; i++) {
+      const file = sortedFiles[i];
+      showNotification(`Restoring file ${i + 1}/${sortedFiles.length}...`, true);
+
+      // Read file content (reuse first file content if it's the first file)
+      const fileContent = i === 0 ? firstFileContent : await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            resolve(JSON.parse(event.target.result));
+          } catch (err) {
+            reject(new Error(`Invalid JSON format in file ${file.name}.`));
+          }
+        };
+        reader.onerror = () => reject(new Error(`Error reading file ${file.name}.`));
+        reader.readAsText(file);
+      });
+
+      // Check if file has data property
+      if (!fileContent.data || Object.keys(fileContent.data).length === 0) {
+        console.warn(`File ${file.name} contains no data to restore.`);
+        continue;
+      }
+
+      // Check if this file contains store chunks
+      const hasStoreChunks = fileContent.metadata && fileContent.metadata.storeInfo;
+
+      // Process each store in the file
+      const storeEntries = Object.entries(fileContent.data);
+      for (let storeIdx = 0; storeIdx < storeEntries.length; storeIdx++) {
+        const [storeName, records] = storeEntries[storeIdx];
+
+        // Skip if already processed (for non-chunked stores)
+        if (!hasStoreChunks && processedStores.has(storeName)) {
+          continue;
+        }
+
+        // Only increment for stores we haven't processed yet
+        if (!processedStores.has(storeName) && (!hasStoreChunks || !storeChunks[storeName])) {
+          currentStoreIndex++;
+        }
+
+        if (!db.objectStoreNames.contains(storeName)) {
+          console.warn(`Skipping store "${storeName}" as it doesn't exist in the current database.`);
+          continue;
+        }
+
+        if (!Array.isArray(records) || records.length === 0) {
+          console.warn(`Skipping empty or invalid records for store "${storeName}".`);
+          continue;
+        }
+
+        // Explicitly remove any existing progress notification before starting a new store
+        removeNotification(note => note.isProgress && !note.isBackgroundTask);
+
+        // Calculate overall progress
+        const storeProgress = Math.round((currentStoreIndex / totalStores) * 100);
+
+        // If this is a chunked store, handle differently
+        if (hasStoreChunks && fileContent.metadata.storeInfo[storeName]) {
+          const chunkInfo = fileContent.metadata.storeInfo[storeName];
+
+          // Initialize store chunks if not already done
+          if (!storeChunks[storeName]) {
+            storeChunks[storeName] = {
+              chunks: Array(chunkInfo.totalChunks).fill(null),
+              totalRecords: chunkInfo.totalRecords,
+              processedChunks: 0
+            };
+          }
+
+          // Store chunk reference instead of actual data to save memory
+          storeChunks[storeName].chunks[chunkInfo.currentChunk - 1] = {
+            fileIndex: i,
+            records: records
+          };
+          storeChunks[storeName].processedChunks++;
+
+          // Show progress for chunked store
+          showNotification(
+            `Store ${currentStoreIndex}/${totalStores} (${storeProgress}%): "${storeName}" - Processing chunk ${storeChunks[storeName].processedChunks}/${chunkInfo.totalChunks} - File ${i + 1}/${sortedFiles.length}`,
+            true
+          );
+
+          // If we've processed all chunks for this store, restore it
+          if (storeChunks[storeName].processedChunks === chunkInfo.totalChunks) {
+            // Clear the store before restoring
+            await new Promise((resolve) => {
+              const clearReq = db
+                .transaction([storeName], "readwrite")
+                .objectStore(storeName)
+                .clear();
+              clearReq.onsuccess = resolve;
+              clearReq.onerror = () => {
+                console.warn(`Failed to clear store "${storeName}"`);
+                resolve(); // Continue anyway
+              };
+            });
+
+            // Process each chunk directly without flattening the entire array
+            const totalRecords = chunkInfo.totalRecords;
+            let processedRecords = 0;
+
+            // Process each chunk separately
+            for (let chunkIdx = 0; chunkIdx < storeChunks[storeName].chunks.length; chunkIdx++) {
+              const chunkRef = storeChunks[storeName].chunks[chunkIdx];
+              const chunkRecords = chunkRef.records;
+
+              // Process this chunk in smaller batches
+              const batchSize = 500;
+              for (let offset = 0; offset < chunkRecords.length; offset += batchSize) {
+                const batch = chunkRecords.slice(offset, offset + batchSize);
+
+                await new Promise(resolve => {
+                  const transaction = db.transaction([storeName], "readwrite");
+                  const store = transaction.objectStore(storeName);
+                  let completed = 0;
+
+                  batch.forEach(record => {
+                    try {
+                      const req = store.put(record);
+                      req.onsuccess = () => {
+                        completed++;
+                        if (completed === batch.length) resolve();
+                      };
+                      req.onerror = (event) => {
+                        console.warn(`Error restoring record in "${storeName}": ${event.target.error}`);
+                        completed++;
+                        if (completed === batch.length) resolve();
+                      };
+                    } catch (error) {
+                      console.error(`Exception restoring record: ${error}`);
+                      completed++;
+                      if (completed === batch.length) resolve();
+                    }
+                  });
+
+                  transaction.onerror = (event) => {
+                    console.error(`Transaction error restoring chunk in "${storeName}":`, event.target.error);
+                    resolve(); // Continue with next batch
+                  };
+                });
+
+                processedRecords += batch.length;
+                const percent = Math.round((processedRecords / totalRecords) * 100);
+
+                // Remove previous notification and show updated one
+                removeNotification(note => note.isProgress && !note.isBackgroundTask);
+
+                // Enhanced notification with total progress information
+                showNotification(
+                  `Store ${currentStoreIndex}/${totalStores} (${storeProgress}%): "${storeName}" - ${processedRecords}/${totalRecords} records (${percent}%) - File ${i + 1}/${sortedFiles.length}`,
+                  true
+                );
+
+                // Yield to UI
+                await new Promise(res => setTimeout(res, 0));
+              }
+
+              // Free memory by clearing the reference after processing
+              storeChunks[storeName].chunks[chunkIdx] = null;
+            }
+
+            processedStores.add(storeName);
+            console.log(`Restored chunked store "${storeName}" with ${totalRecords} records`);
+          }
+        }
+        // If this store hasn't been processed yet and isn't chunked, restore it directly
+        else if (!processedStores.has(storeName)) {
+          console.log(`Starting restore of store "${storeName}" with ${records.length} records`);
+
+          // Show initial notification for this store
+          showNotification(
+            `Store ${currentStoreIndex}/${totalStores} (${storeProgress}%): "${storeName}" - 0/${records.length} records (0%) - File ${i + 1}/${sortedFiles.length}`,
+            true
+          );
+
+          // Clear the store before restoring
+          await new Promise((resolve) => {
+            const clearReq = db
+              .transaction([storeName], "readwrite")
+              .objectStore(storeName)
+              .clear();
+            clearReq.onsuccess = resolve;
+            clearReq.onerror = () => {
+              console.warn(`Failed to clear store "${storeName}"`);
+              resolve(); // Continue anyway
+            };
+          });
+
+          // Determine if this is a large store that needs special handling
+          const isLargeStore = records.length > 10000;
+          const chunkSize = isLargeStore ? 1000 : 500; // Larger batch size for large stores
+
+          // Restore records in chunks
+          let restored = 0;
+          while (restored < records.length) {
+            const chunk = records.slice(restored, restored + chunkSize);
+            await new Promise(resolve => {
+              const transaction = db.transaction([storeName], "readwrite");
+              const store = transaction.objectStore(storeName);
+
+              let completed = 0;
+
+              chunk.forEach(record => {
+                try {
+                  const req = store.put(record);
+                  req.onsuccess = () => {
+                    completed++;
+                    if (completed === chunk.length) resolve();
+                  };
+                  req.onerror = (event) => {
+                    console.warn(`Error restoring record in "${storeName}": ${event.target.error}`);
+                    completed++;
+                    if (completed === chunk.length) resolve();
+                  };
+                } catch (error) {
+                  console.error(`Exception restoring record: ${error}`);
+                  completed++;
+                  if (completed === chunk.length) resolve();
+                }
+              });
+
+              transaction.onerror = (event) => {
+                console.error(`Transaction error restoring chunk in "${storeName}":`, event.target.error);
+                resolve(); // Continue with next chunk
+              };
+            });
+
+            restored += chunk.length;
+            const percent = Math.round((restored / records.length) * 100);
+
+            // Remove previous notification and show updated one
+            removeNotification(note => note.isProgress && !note.isBackgroundTask);
+
+            // Enhanced notification with total progress information
+            showNotification(
+              `Store ${currentStoreIndex}/${totalStores} (${storeProgress}%): "${storeName}" - ${restored}/${records.length} records (${percent}%) - File ${i + 1}/${sortedFiles.length}`,
+              true
+            );
+
+            // Yield to UI
+            await new Promise(res => setTimeout(res, 0));
+          }
+
+          processedStores.add(storeName);
+          console.log(`Completed restore of store "${storeName}"`);
+        }
+
+        // Add a small delay after processing each store to ensure notification is visible
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+
+      // Allow UI to update
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // Check if any chunked stores are incomplete
+    let incompleteStores = 0;
+    for (const [storeName, info] of Object.entries(storeChunks)) {
+      if (info.processedChunks < info.chunks.length) {
+        showNotification(`Warning: Store "${storeName}" is incomplete. Only ${info.processedChunks} of ${info.chunks.length} chunks were restored.`, false);
+        incompleteStores++;
+      }
+    }
+
+    if (processedStores.size > 0) {
+      if (incompleteStores > 0) {
+        showNotification(`Database restore completed with ${incompleteStores} incomplete stores. Some data may be missing.`, false);
+      } else {
+        showNotification(`Database restore completed successfully! Restored ${processedStores.size} stores.`, false);
+      }
+    } else {
+      showNotification("No data was restored. Check that the backup files contain valid data.", false);
+    }
+    return true;
+  } catch (error) {
+    console.error("Error during restore:", error);
+    showNotification(`Restore error: ${error.message}`, false);
+    return false;
   }
 }
 
@@ -5819,7 +6213,7 @@ function generateTooltip(mediaData) {
   </a>
 </li>`;
 
-
+ 
   // Add trailers if they exist (regardless of justwatch_links setting)
   if (mediaData.trailers?.length) {
     tooltipListContent += generateTrailerLinks(mediaData.trailers);
@@ -13144,31 +13538,37 @@ function setupSearchInputHandlers() {
 }
 
 function setupFileInputHandlers() {
-  // Restore file input handler
-  const restoreFileInput = document.getElementById("restore-file");
-  if (restoreFileInput) {
-    restoreFileInput.addEventListener("change", async (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
+    // Restore file input handler
+    const restoreFileInput = document.getElementById("restore-file");
+    if (restoreFileInput) {
+      restoreFileInput.addEventListener("change", async (event) => {
+        const files = event.target.files; 
+        if (!files || files.length === 0) return;
 
-      try {
-        console.log("File selected:", file.name, "Size:", file.size);
-        showNotification(`Processing ${(file.size / (1024 * 1024)).toFixed(1)}MB backup file...`, true);
+        try {
+          // Convert FileList to Array properly
+          const filesArray = Array.from(files);
+          console.log(`Selected ${filesArray.length} files. First file: ${filesArray[0]?.name}, Size: ${filesArray[0]?.size}`);
 
-        await restoreDatabase(file, db);
-        console.log("Restoration complete, reloading page");
-        showNotification("Restore completed successfully! Reloading page...", false);
-        setTimeout(() => location.reload(), 1000);
-      } catch (error) {
-        console.error("Error during restore:", error);
-        showNotification("Restore failed: " + error.message, false);
-        alert("An error occurred during the restore process: " + error.message);
-      } finally {
-        // Clear the input
-        event.target.value = "";
-      }
-    });
-  }
+          // Initial notification is shown by the restore function itself
+          const result = await restoreDatabase(filesArray, db);
+
+          // Only show success and reload if restore wasn't canceled
+          if (result !== false) {
+            console.log("Restoration complete.");
+            setTimeout(() => location.reload(), 1000);
+            showNotification("Restore completed successfully!", false);
+          }
+        } catch (error) {
+          console.error("Error during restore:", error);
+          showNotification("Restore failed: " + error.message, false);
+          alert("An error occurred during the restore process: " + error.message);
+        } finally {
+          // Clear the input
+          event.target.value = "";
+        }
+      });
+    }
 
   // Import file input handler
   const importFileInput = document.getElementById("import-file");
