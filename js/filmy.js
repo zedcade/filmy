@@ -427,18 +427,6 @@ const debouncedResetYearFilters = debounce(resetYearFilters, 70);
 const debouncedApplyYearFilters = debounce((triggeredBy) => { applyFiltersAndSearch(triggeredBy); }, 70);
 const throttledUpdateGridSizeLayout = throttle(updateGridSizeLayout, 16); // 16 = ~60fps
 const throttledJumpToLetter = throttle(jumpToLetter, 400); // 400ms limit between jumps
-const debouncedUpdatePageSize = debounce(() => {
-  const size = parseInt(gridSizeSlider.value, 10);
-
-  // Update page size using cached calculation
-  pageSize = getPageSize();
-  console.log(`Card size changed to ${size}px, updating page size to ${pageSize}`);
-
-  // Update observers if needed
-  if (isObserving) {
-    observeMediaCards();
-  }
-}, 250);
 
 // Cache for page size calculations
 const pageSizeCache = {
@@ -13436,7 +13424,6 @@ function setupInputChangeHandlers() {
     });
 
     gridSizeSlider.addEventListener('change', () => {
-      updateGridSizeLayout();
       saveGridSizePreference(gridSizeSlider.value);
       gridSizeSlider.blur();
     });
@@ -14247,10 +14234,6 @@ function updateGridSizeLayout() {
   if (isObserving) {
     observeMediaCards();
   }
-  
-  // Still call the debounced version to ensure any other dependent updates occur
-  debouncedUpdatePageSize();
-
 }
 
 // Helper function to get visible cards
