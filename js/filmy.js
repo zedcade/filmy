@@ -319,12 +319,12 @@ const keywordsArray = [];
 const searchMapping = {
   Movies: { 
     items: () => Array.from(mediaCache.values()).filter(m => m.mediaType === 'movie'),
-    fields: ["Title", "original_title", "dataTitle"],
+    fields: ["Title", "original_title"],
     creditStore: "movie_credits" 
   },
   Series: { 
     items: () => Array.from(mediaCache.values()).filter(m => m.mediaType === 'tv'),
-    fields: ["Title", "original_title", "dataTitle"], 
+    fields: ["Title", "original_title"], 
     creditStore: "series_credits" 
   },
   People: {
@@ -425,7 +425,7 @@ const debouncedApplyRatingFilters = debounce(() => applyFiltersAndSearch(), 50);
 const debouncedApplyGenreFilters = debounce(applyFiltersAndSearch, 50);
 const debouncedResetYearFilters = debounce(resetYearFilters, 70);
 const debouncedApplyYearFilters = debounce((triggeredBy) => { applyFiltersAndSearch(triggeredBy); }, 70);
-const throttledUpdateGridSizeLayout = throttle(updateGridSizeLayout, 16); // ~60fps
+const throttledUpdateGridSizeLayout = throttle(updateGridSizeLayout, 16); // 16 = ~60fps
 const throttledJumpToLetter = throttle(jumpToLetter, 400); // 400ms limit between jumps
 const debouncedUpdatePageSize = debounce(() => {
   const size = parseInt(gridSizeSlider.value, 10);
@@ -457,7 +457,7 @@ const pageSizeCache = {
     // Return cached value if available
     if (this._cache.has(cacheKey)) {
       const cachedResult = this._cache.get(cacheKey);
-      console.log(`Using cached page size: ${cachedResult} for width ${cardWidth}px`);
+      // console.log(`Using cached page size: ${cachedResult} for width ${cardWidth}px`);
       return cachedResult;
     }
 
@@ -526,7 +526,7 @@ const apiKeyManager = (function () {
       // Find the first key that hasn't reached the limit
       for (const apiCall of apiUsage.calls) {
         if (apiCall.count < omdbRateLimit) {
-          console.log(`Using API key: ${apiCall.key}`);
+          // console.log(`Using API key: ${apiCall.key}`);
           return apiCall.key;
         }
       }
@@ -623,7 +623,6 @@ async function updateApiCallCount(apiKey) {
     if (apiCall.key === apiKey) {
       apiCall.count += 1;
       keyFound = true;
-      console.log(`API key ${apiKey} call count updated to ${apiCall.count}`);
       break;
     }
   }
@@ -662,7 +661,6 @@ async function setApiCallCount(apiKey, count) {
     if (apiCall.key === apiKey) {
       apiCall.count = count;
       keyFound = true;
-      console.log(`API key ${apiKey} call count set to ${count}`);
       break;
     }
   }
@@ -781,7 +779,7 @@ const backgroundPeopleQueue = {
         return !record || !record.timestamp || (now - record.timestamp > maxAge);
       });
 
-      console.log(`Filtered out ${personIDs.length - personIDsToProcess.length} existing/fresh records`);
+      console.log(`_processPeopleData: Filtered out ${personIDs.length - personIDsToProcess.length} existing/fresh records`);
 
       if (personIDsToProcess.length > 0) {
         let peopleDetails = await queryTMDB(
@@ -2253,7 +2251,7 @@ async function queryOMDB(imdbID, retryCount = 0) {
 
     // If unauthorized, mark key as invalid and retry with another key
     if (response.status === 401) {
-      console.warn(`API key ${apiKey} is invalid or expired`);
+      console.warn(`API key is invalid or expired`);
       // Mark this key as reached limit to avoid using it again
       await setApiCallCount(apiKey, omdbRateLimit);
 
@@ -2509,7 +2507,7 @@ function showCustomConfirm(message, onConfirm) {
           click: () => {
             closePopup('confirm');
             resolve(false);
-            console.log("User canceled the action.");
+            // console.log("User canceled the action.");
           }
         },
         '#confirm-delete': {
@@ -4301,7 +4299,7 @@ function scrollToTopOfGrid() {
   if (movieGrid) {
     const offsetTop = movieGrid.getBoundingClientRect().top + window.scrollY - menuBarHeight;
     window.scrollTo({ top: offsetTop, behavior: "auto" }); // Use "auto" for instant alignment
-    console.log("Scrolled to top of movie grid, adjusted for menu bar.");
+    // console.log("Scrolled to top of movie grid, adjusted for menu bar.");
   } else {
     console.warn("Movie grid not found for scrolling.");
   }
@@ -4384,22 +4382,12 @@ async function loadRecords(db) {
     await reloadListMetadata(userSettings.username);
     cacheRecords(allRecords);
     totalRecords = allRecords.length;
+    populateCountryDropdown(allRecords); 
+    updateActiveYears(); 
 
-    populateCountryDropdown(allRecords);
-    updateActiveYears();
-
-    // Start with full dataset
-    let filtered = [...allRecords];
-
-    // Final sorting
-    filtered = sortRecords(filtered, "title", true);
-    currentSortField = "title";
-
-    // Update global state
-    filteredRecords = filtered;
-    // Reset grid and load first page
-    resetGrid(true); // Reset to startIndex=0
-    loadPaginatedRecords(0); // Explicitly load from beginning
+    filteredRecords = sortRecords([...allRecords], "title", true);
+    resetGrid(true);
+    loadPaginatedRecords(0);
     updateMatchCount();
 
   } catch (error) {
@@ -5175,7 +5163,6 @@ function initializeRatingsFilter() {
   });
 
   // Add click event listener to reset ratings filters when clicking on the button
-  // ratingsFilterButton.addEventListener("click", () => resetRatingsFilters(sliders));
   ratingsFilterButton.addEventListener("click", () => toggleRatingSort('ratings-filter'));
 
   // Ensure proper alignment after DOM content is fully loaded
@@ -5385,15 +5372,14 @@ async function searchAllStores(query, signal) {
   if (!query || query.trim() === "") return [];
   query = query.trim();
 
-  // Create a loading indicator
   showNotification('Searching...', true);
 
   try {
-    // First, quickly search cached movies/series
+    // Search Movies using searchMapping
     const movieResults = await chunkedSearch(
-      Array.from(mediaCache.values()).filter(m => m.mediaType === 'movie'),
+      searchMapping.Movies.items(),
       query,
-      ["Title", "original_title", "dataTitle"],
+      searchMapping.Movies.fields, 
       normalizeForSearch,
       signal
     );
@@ -5401,83 +5387,67 @@ async function searchAllStores(query, signal) {
     if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
     await yieldToUI();
 
+    // Search Series using searchMapping
     const seriesResults = await chunkedSearch(
-      Array.from(mediaCache.values()).filter(m => m.mediaType === 'tv'),
+      searchMapping.Series.items(), 
       query,
-      ["Title", "original_title", "dataTitle"],
+      searchMapping.Series.fields,  
       normalizeForSearch,
       signal
     );
 
-    // Immediately display these initial results
+    // Initial combined results
     const initialResults = [...movieResults, ...seriesResults];
-    applyFiltersAndSearch(null, false, initialResults, true); // Set shouldSort to false to preserve order, and last true for resetGrid
+    applyFiltersAndSearch(null, false, initialResults, true);
     updateMatchCount();
 
     if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
     await yieldToUI();
 
-    // For single letter searches, skip the expensive people/keywords search
-    if (query.length === 1) {
-      removeNotification(note => note.isProgress && !note.isBackgroundTask);
-      return initialResults;
-    }
-
-    // Continue with people search
-    const peopleMatches = await queryIndexedDB(db, "people", ["name"], query, normalizeForName);
-    if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
-    await yieldToUI();
+    // Search People using searchMapping
+    const peopleMatches = await queryIndexedDB(
+      db,
+      "people",
+      searchMapping.People.fields, 
+      query,
+      normalizeForName
+    );
 
     const peopleResults = await searchItemsWithLookup(
       peopleMatches,
       query,
-      ["name"],
+      searchMapping.People.fields, 
       db,
       searchMapping.People.lookupFlow,
       signal
     );
 
-    // Update UI with people results if any were found
-    if (peopleResults.length > 0) {
-      const resultsWithPeople = [...initialResults, ...peopleResults];
-      applyFiltersAndSearch(null, false, resultsWithPeople, false);
-      updateMatchCount();
-    }
-
-    if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
-    await yieldToUI();
-
-    // Finally, search keywords
-    const keywordMatches = await queryIndexedDB(db, "keywords", ["name"], query, normalizeForName);
-    if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
-    await yieldToUI();
+    // Search Keywords using searchMapping
+    const keywordMatches = await queryIndexedDB(
+      db,
+      "keywords",
+      searchMapping.Keywords.fields, 
+      query,
+      normalizeForName
+    );
 
     const keywordResults = await searchItemsWithLookup(
       keywordMatches,
       query,
-      ["name"],
+      searchMapping.Keywords.fields, 
       db,
       searchMapping.Keywords.lookupFlow,
       signal
     );
 
-    // Update UI with all results if keywords were found
-    if (keywordResults.length > 0) {
-      const allResults = [
-        ...initialResults,
-        ...peopleResults,
-        ...keywordResults
-      ];
+    // Final combined results
+    const allResults = [...initialResults, ...peopleResults, ...keywordResults];
+    if (peopleResults.length > 0 || keywordResults.length > 0) {
       applyFiltersAndSearch(null, false, allResults, false);
       updateMatchCount();
     }
 
-    // Return all results
-    return [
-      ...initialResults,
-      ...peopleResults,
-      ...keywordResults
-    ];
+    return allResults;
   } finally {
     removeNotification(note => note.isProgress && !note.isBackgroundTask);
   }
@@ -6213,7 +6183,7 @@ function generateTooltip(mediaData) {
   </a>
 </li>`;
 
- 
+
   // Add trailers if they exist (regardless of justwatch_links setting)
   if (mediaData.trailers?.length) {
     tooltipListContent += generateTrailerLinks(mediaData.trailers);
@@ -6483,7 +6453,7 @@ function throttle(func, limit) {
 function buildLetterIndex() {
   if (!filteredRecords || filteredRecords.length === 0) return null;
 
-  console.log("Building letter index for quick navigation...");
+  //console.log("Building letter index for quick navigation...");
   const index = new Map();
 
   // Build the index mapping first letters to their positions
@@ -6499,11 +6469,11 @@ function buildLetterIndex() {
     // Store only the first occurrence of each letter
     if (!index.has(indexChar)) {
       index.set(indexChar, i);
-      console.log(`Letter index: "${indexChar}" starts at position ${i} (${record.Title})`);
+      //console.log(`Letter index: "${indexChar}" starts at position ${i} (${record.Title})`);
     }
   });
 
-  console.log(`Built letter index with ${index.size} unique starting characters`);
+  // console.log(`Built letter index with ${index.size} unique starting characters`);
   return index;
 }
 
@@ -6586,9 +6556,7 @@ function resetGrid(resetPagination = true) {
     currentPage = 0;
     startIndex = 0;
     endIndex = 0;
-    console.log("Full pagination reset");
-  } else {
-    console.log("Grid cleared (pagination retained)");
+    // console.log("Full pagination reset");
   }
 }
 
@@ -6598,7 +6566,7 @@ function resetGrid(resetPagination = true) {
  */
 function jumpToLetter(letter) {
   const normalizedLetter = letter.toLowerCase();
-  console.log(`Jump request to letter: ${normalizedLetter}`);
+  //console.log(`Jump request to letter: ${normalizedLetter}`);
 
   if (!filteredRecords || filteredRecords.length === 0) return;
 
@@ -6668,7 +6636,9 @@ function jumpToLetter(letter) {
   }).then(({ needsReset, targetIndex }) => {
     // Second microtask: Perform DOM modifications
     if (needsReset) {
-      resetGrid(true);
+      resetGrid(false);
+      renderedMediaIDs.clear();
+
       startIndex = Math.max(0, targetIndex - Math.floor(pageSize / 2));
       endIndex = Math.min(filteredRecords.length, startIndex + pageSize);
       currentPage = Math.floor(startIndex / pageSize);
@@ -6777,11 +6747,11 @@ function observeMediaCards() {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
           if (entry.target === lastCard && endIndex < filteredRecords.length) {
-            console.log("Last card visible, loading next batch");
+            // console.log("Last card visible, loading next batch");
             lastBatchLoadTime = now;
             loadNextBatch();
           } else if (entry.target === firstCard && startIndex > 0) {
-            console.log("First card visible, loading previous batch");
+            // console.log("First card visible, loading previous batch");
             lastBatchLoadTime = now;
             loadPreviousBatch();
           }
@@ -6798,7 +6768,7 @@ function observeMediaCards() {
   observer.observe(firstCard);
   observer.observe(lastCard);
 
-  console.log(`Observers attached to cards at indices ${startIndex} and ${endIndex - 1}`);
+  // console.log(`Observers attached to cards at indices ${startIndex} and ${endIndex - 1}`);
 }
 
 /**
@@ -6828,7 +6798,7 @@ function loadPreviousBatch() {
 
   const previousStart = Math.max(0, startIndex - pageSize);
   const previousEnd = startIndex;
-  console.log(`Lazy loading previous batch: indices ${previousStart} to ${previousEnd}`);
+  //console.log(`Lazy loading previous batch: indices ${previousStart} to ${previousEnd}`);
 
   const paginatedRecords = filteredRecords.slice(previousStart, previousEnd);
   if (paginatedRecords.length > 0) {
@@ -6868,7 +6838,7 @@ function loadNextBatch() {
   // Calculate next batch indices
   const nextStart = endIndex;
   const nextEnd = Math.min(filteredRecords.length, endIndex + pageSize);
-  console.log(`Lazy loading next batch: indices ${nextStart} to ${nextEnd}`);
+  //console.log(`Lazy loading next batch: indices ${nextStart} to ${nextEnd}`);
 
   const paginatedRecords = filteredRecords.slice(nextStart, nextEnd);
   if (paginatedRecords.length > 0) {
@@ -7118,6 +7088,7 @@ function sortRecords(media, criteria = "title", ascending = true) {
     return sortedRecords;
   }
 
+/*
   // Debug the problematic records before sorting
   if (criteria === "year") {
     const problemRecords = sortedRecords.filter(item =>
@@ -7131,7 +7102,7 @@ function sortRecords(media, criteria = "title", ascending = true) {
       type: typeof r.numericYear
     })));
   }
-
+*/
   return sortedRecords.sort((a, b) => {
     let valueA, valueB;
 
@@ -7371,7 +7342,7 @@ function handleNavClick(event, element) {
   if (element && element.classList.contains('nav-link')) {
     event.preventDefault();
     const filter = element.dataset.filter;
-    console.log(`Clicked on letter ${filter}`);
+    //console.log(`Clicked on letter ${filter}`);
     throttledJumpToLetter(filter);
   }
 }
@@ -8203,7 +8174,7 @@ async function showSettingsPopup(onFirstProfileSavedCallback) {
 
   // --- Use pre-loaded settings for the CURRENT user ---
   const isFirstUser = allUsernames.length === 0;
-  console.log(`showSettingsPopup: isFirstUser = ${isFirstUser}`);
+  // console.log(`showSettingsPopup: isFirstUser = ${isFirstUser}`);
 
   // Always fetch fresh settings from the database for the current user
   let currentUserSettings = {};
@@ -8376,7 +8347,7 @@ function loadUserSettingsDB(settings, isFirstUser = false) {
     settings = {};
   }
 
-  console.log("Loading settings into form. isFirstUser:", isFirstUser, "settings:", settings);
+  // console.log("Loading settings into form. isFirstUser:", isFirstUser, "settings:", settings);
 
   const countryCode = Intl.DateTimeFormat().resolvedOptions().locale.split('-')[1] || 'US';
 
@@ -8412,7 +8383,7 @@ function loadUserSettingsDB(settings, isFirstUser = false) {
 
   if (backupActiveCheckbox) {
     backupActiveCheckbox.checked = settings.backup_active === true;
-    console.log("Setting backup_active checkbox to:", settings.backup_active, typeof settings.backup_active);
+    // console.log("Setting backup_active checkbox to:", settings.backup_active, typeof settings.backup_active);
   } else {
     console.warn("Element backup-active not found.");
   }
@@ -8453,7 +8424,7 @@ function loadUserSettingsDB(settings, isFirstUser = false) {
   const canPopulateProviders = !isFirstUser && settings.username && settings.tmdb_apikey;
 
   if (canPopulateProviders) {
-    console.log("Conditions met, calling populateProvidersDropdown from loadUserSettingsDB.");
+    // console.log("Conditions met, calling populateProvidersDropdown from loadUserSettingsDB.");
     // Use browser locale as fallback if no country is set
     const countryToUse = settings.justwatch_country ||
       Intl.DateTimeFormat().resolvedOptions().locale.split("-")[1] ||
@@ -9150,7 +9121,7 @@ function refreshOmdbKeyDropdownDB(settings) {
   const keys = Array.isArray(settings.omdb_apikeys) ? settings.omdb_apikeys : [];
 
   // Log for debugging
-  console.log("Refreshing OMDB key dropdown with keys:", keys);
+  // console.log("Refreshing OMDB key dropdown with keys:", keys);
 
   if (keys.length > 0) {
     // Build the dropdown options
@@ -9548,7 +9519,7 @@ async function getProvidersData(maxAgeDays = 7) {
 
     // Use cached data if it exists and isn't stale
     if (cached && cached.timestamp && !isDataStale(cached.timestamp, maxAgeDays)) {
-      console.log("Using cached provider data");
+      // console.log("Using cached provider data");
       return cached.data;
     }
 
@@ -12152,8 +12123,10 @@ async function checkVideoThumbnail(videoKey, mediaData, mediaType) {
     // Update the status in the merged data object for consistency
     if (videoObj) videoObj.status = response.status;
 
-    // Update the card UI to reflect the change
-    updateMediaCard(mediaData.imdbID, mediaType);
+    // Only update the card UI if the video is invalid (404)
+    if (!isValid) {
+      updateMediaCard(mediaData.imdbID, mediaType);
+    }
 
     return isValid;
   } catch (error) {
@@ -12184,11 +12157,14 @@ async function checkVideoThumbnail(videoKey, mediaData, mediaType) {
     // Update the status in the merged data object for consistency
     if (videoObj) videoObj.status = 404;
 
+    // Update the card UI since we have an error (treated as 404)
+    updateMediaCard(mediaData.imdbID, mediaType);
+
     return false;
   }
 }
 
-// need that for the stupid HEAD/GET check for dead or private YT videos failing at times ### refactor this and checkthumb and sw.js to a more reliable solution
+// need that for the HEAD/GET check for dead or private YT videos failing at times ### refactor this and checkthumb in sw.js to a more reliable solution
 async function resetAllVideoStatuses() {
   showNotification("Checking all video thumbnails in database...", true);
 
@@ -12574,7 +12550,7 @@ async function initializeApplication() {
 }
 
 async function completeInitialization() {
-  console.log("Running completeInitialization...");
+  // console.log("Running completeInitialization...");
   if (!userSettings || userSettings.requiresSetup) {
     console.error("Attempted to complete initialization, but setup is still required or settings are missing.");
     showNotification("⚠️ Please complete profile setup first.", false);
@@ -13318,8 +13294,11 @@ function toggleYearSort() {
     showNotification('Sorting by title (A-Z)', false);
   }
 
-  // Update the grid
-  resetGrid(true);
+  // Reset pagination variables without clearing the grid
+  currentPage = 0;
+  startIndex = 0;
+  endIndex = 0;
+  renderedMediaIDs.clear();
   loadPaginatedRecords(startIndex);
   updateMatchCount();
 }
@@ -13331,7 +13310,7 @@ function handleYearFilterButtonClick() {
     activeEndYear !== null &&
     (activeStartYear !== defaultStartYear || activeEndYear !== defaultEndYear);
 
-  console.log("Year button clicked. Range active:", yearRangeActive);
+  // console.log("Year button clicked. Range active:", yearRangeActive);
 
   if (yearRangeActive) {
     // Reset the sliders to default values
@@ -14270,11 +14249,8 @@ function updateGridSizeLayout() {
   }
   
   // Still call the debounced version to ensure any other dependent updates occur
-  if (typeof debouncedUpdatePageSize === 'function') {
-    debouncedUpdatePageSize();
-  } else {
-    console.warn('debouncedUpdatePageSize is not defined');
-  }
+  debouncedUpdatePageSize();
+
 }
 
 // Helper function to get visible cards
