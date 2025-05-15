@@ -2272,10 +2272,15 @@ background: linear-gradient(to right,
     margin-left: 0px;
 }
 
+.svg-logo,
 .company-logo,
 .network-logo {
-    max-height: 24px;
+    height: 20px;
+    max-height: 20px;
+    width: auto;
+    max-width: 100px;
     opacity: 0.5;
+    vertical-align: middle;
 }
 
 /* PNG/SVG mono logos - apply brightness/invert filter */
@@ -3508,7 +3513,13 @@ input[type="datetime-local"] {
 
 label {
     white-space: nowrap;
+    font-size: 0.75rem;
 } 
+
+.import-dialog label {
+    text-align: right;
+    font-size: 0.75rem;
+}
 
 .default-filename {
     font-family: 'Trebuchet MS', 'Lucida Sans Unicode', 'Lucida Grande', 'Lucida Sans', Arial, sans-serif;

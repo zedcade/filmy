@@ -200,17 +200,13 @@ let activeGenres = [];
 let activeMediaType = null;
 let previousMediaType = null;
 let filteredRecords = [];
-// let linksMap = []; 
 let listsMap = {}; 
 let activeLists = [];
 let allListsMeta = [];
 let customListsMeta = [];
-// let activeCustomLists = [];
 
 /* tooltip and UI related */
-// let hideTimeout; // Timeout for hiding tooltips
 let closeButtonTimeout; // Timeout for hiding video close button
-// let debounceTimeout; // Timeout for debouncing
 const videoStatusCache = new Map();
 
 /* detail view & slideshow */
@@ -221,19 +217,13 @@ let currentBackdropIndex = 0;
 let initialJWConfig = {};
 
 /* filters */
-// const filters = {}; // Global filters object
-// let activeFilter = null; // Track the currently active filter ###unused
 let activeSearchQuery = null; // Track the currently active search query
 let searchAbortController = null; // For canceling in-progress searches
-// let mediaCacheSorted = null;
-// let searchCategory = "All"; // ###unused
 let activeCountry = "All";
 let activeStartYear = null;
 let activeEndYear = null;
 let defaultStartYear = null;
 let defaultEndYear = null;
-// let lastMinYearSliderValue = null;
-// let lastMaxYearSliderValue = null;
 let yearRangeMin, yearRangeMax, startYearLabel, endYearLabel;
 let yearSliderTrack, minYear, maxYear;
 let yearSortActive = false;
@@ -259,12 +249,11 @@ let currentJumpLetter = null;   // Last jumped letter
 let currentJumpIndex = null;    // Last jumped record index
 let startIndex = 0;             // Current batch start index
 let endIndex = 0;               // Current batch end index
-//let currentPage = 0;            // Current page number
-//let indexedGrid = null;         // Instance of the indexed grid system ###unused
 let letterIndex = null;         // Letter index map for quick jumps
 let isObserving = false; // Track observer state globally
 let isJumping = false;
-let jumpLock = false;         // Prevent lazy loading immediately 
+let jumpLock = false;         // Prevent lazy loading immediately
+
 // Initialize isAtMaxSize based on the current grid size slider value
 let isAtMaxSize = (() => {
   const gridSizeSlider = document.getElementById('gridSizeSlider');
@@ -287,8 +276,6 @@ let deferredPrompt;
 */
 let isFetching = false; // Prevent multiple fetches at once
 const omdbRateLimit = 1000; // Daily limit per OMDB key
-//const omdbThrottleLimit = 50;
-//const omdbThrottleInterval = 1000;
 const tmdbThrottleLimit = 50;
 const tmdbThrottleInterval = 1000; // 1 second
 const omdbApiBaseUrl = "https://www.omdbapi.com/";
@@ -390,14 +377,11 @@ const iconListConfig = {
 // Global timer variable
 let mouseTimer;
 const inactivityTime = 3000; // 3 seconds inactivity
-// window.isAdjustingTooltipScroll = false;
 
 /** DOM elements */
 const ratingsFilterButton = document.getElementById("ratings-filter-button");
 const gridSizeSlider = document.getElementById('gridSizeSlider');
 const gridSizeValue = document.getElementById('gridSizeValue');
-// const cardGrid = document.querySelector('.card-grid');
-// const mediaCards = document.querySelectorAll('.media-card');
 
 const weightedRating = {
   minVotes: 1000,
@@ -2159,6 +2143,7 @@ function tmdbErrorHandler(error, _item, url) {
   if (error.status === 404 && url.includes('/episode/')) {
     const matches = url.match(/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
     if (matches) {
+      console.log("Handled 404 for episode:", url);
       return {
         id: -1,
         season_number: parseInt(matches[2]),
@@ -2180,7 +2165,7 @@ async function queryTMDB(data, endpoint, tmdbCategory, isBackgroundProcess = fal
   await queryAPI(
     data,
     (item, apiKey) => {
-      const { tmdbID, title, year, customEndpoint } = item;
+      const { tmdbID, title, year } = item;
 
       // Unified URL builder with validation
       switch (endpoint) {
@@ -2201,12 +2186,12 @@ async function queryTMDB(data, endpoint, tmdbCategory, isBackgroundProcess = fal
         }
 
         case "custom": {
-          if (!tmdbID || !customEndpoint) {
+          if (!tmdbID || !item.endpoint) {
             console.warn("Skipping custom query - missing tmdbID/endpoint:", item);
             return null;
           }
-          const separator = customEndpoint.includes("?") ? "&" : "?";
-          return `${tmdbApiBaseUrl}${tmdbCategory}/${tmdbID}/${customEndpoint}${separator}api_key=${apiKey}`;
+          const separator = item.endpoint.includes("?") ? "&" : "?";
+          return `${tmdbApiBaseUrl}${tmdbCategory}/${tmdbID}/${item.endpoint}${separator}api_key=${apiKey}`;
         }
 
         default: {
@@ -4232,13 +4217,11 @@ async function applyFiltersAndSearch(triggeredBy = null, shouldSort = true, preF
       yearSortAscending = true;
       yearFilterButton.classList.remove('sort-desc');
       yearFilterButton.classList.add('sort-asc');
-      // lastMinYearSliderValue = activeStartYear;
       currentSortField = "year"; // Set the current sort field to year
     } else if (triggeredBy === "max") {
       yearSortAscending = false;
       yearFilterButton.classList.remove('sort-asc');
       yearFilterButton.classList.add('sort-desc');
-      // lastMaxYearSliderValue = activeEndYear;
       currentSortField = "year"; // Set the current sort field to year
     }
   } else {
@@ -4425,15 +4408,12 @@ function updateActiveYears() {
     activeEndYear = sortedCache[sortedCache.length - 1].numericYear;
     defaultStartYear = activeStartYear;
     defaultEndYear = activeEndYear;
-    // Cache sorted results globally for later use.
-    // mediaCacheSorted = sortedCache;
   } else {
     // Reset to default values if the cache is empty
     activeStartYear = null;
     activeEndYear = null;
     defaultStartYear = null;
     defaultEndYear = null;
-    // mediaCacheSorted = null;
   }
 }
 
@@ -4660,8 +4640,6 @@ function resetYearFilters() {
   yearFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
 
   // Reset all year sort state variables
-  // lastMinYearSliderValue = null;
-  // lastMaxYearSliderValue = null;
   yearSortActive = false;  // Reset the new sort state variable
   yearSortAscending = true;  // Reset to default
 
@@ -5833,6 +5811,20 @@ function generateRatingsHtml(mediaData) {
     '½': ' 1/2' // Replace fraction ½ with 1/2
   };
 
+  // Normalize the title for exception key matching
+  const normalizedTitle = mediaData.Title
+    .normalize('NFD')
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹½]/g, match => specialCharacterMap[match])
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\d\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_')
+    .toLowerCase();
+
+  // Create the normalized exception key
+  const exceptionKey = `${normalizedTitle}_${mediaData.Year}`;
+
   const formattedVoteCount = parseFloat(mediaData.vote_count)
     .toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
@@ -5855,16 +5847,17 @@ function generateRatingsHtml(mediaData) {
     tmdbRatingLink = `<a href="https://www.themoviedb.org/${mediaData.mediaType}/${mediaData.tmdbID}" target="_blank" class="rating-link"><span class="tmdb-rating">NR</span><span class="tmdb-votes">–</span><span class="ttip-txt" data-tt-pos="bottom">🔗 TMDB</span></a>`;
   }
 
+  const metacriticUrlExceptions = {
+    // Example keys: normalizedTitle_Year
+    "aftermath_2017": "aftermath_2017",
+  };
+
+  const baseMetacriticUrl = "https://www.metacritic.com/movie/";
+
   // Generate Metascore icon/link
-  let msUrl = mediaData.Title
-    .normalize('NFD')
-    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹½]/g, match => specialCharacterMap[match])
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\w\d\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-')
-    .toLowerCase();
-  msUrl = `https://www.metacritic.com/movie/${msUrl}`;
+  const msUrl = metacriticUrlExceptions[exceptionKey]
+    ? baseMetacriticUrl + metacriticUrlExceptions[exceptionKey]
+    : `${baseMetacriticUrl}${normalizedTitle.replace(/_/g, '-')}`;
     
   const metascore = mediaData.Metascore && mediaData.Metascore !== "N/A" ? parseInt(mediaData.Metascore) : null;
   let metascoreIcon = "";
@@ -5893,46 +5886,35 @@ function generateRatingsHtml(mediaData) {
 
   // Prepare Rotten Tomatoes rating, define exceptions for links that don't follow the pattern
   const rtUrlExceptions = {
-    "9_2009": "https://www.rottentomatoes.com/m/1205483_nine",
-    "1408_2007": "https://www.rottentomatoes.com/m/1408",
-    "1911_2011": "https://www.rottentomatoes.com/m/1911",
-    "8_2020": "https://www.rottentomatoes.com/m/the_soul_collector_2020",
-    "21_2008": "https://www.rottentomatoes.com/m/10009192-21",
-    "2010_1984": "https://www.rottentomatoes.com/m/2010_the_year_we_make_contact",
-    "2012_2009": "https://www.rottentomatoes.com/m/2012",
-    "dr_strangelove_or_how_i_learned_to_stop_worrying_and_love_the_bomb_1964": "https://www.rottentomatoes.com/m/dr_strangelove",
-    "friday_the_13th_part_vi_jason_lives_1986": "https://www.rottentomatoes.com/m/friday_the_13th_part_6_jason_lives",
-    "friday_the_13th_the_new_blood_1988": "https://www.rottentomatoes.com/m/friday_the_13th_part_7_the_new_blood",
-    "friday_the_13th_part_viii_jason_takes_manhattan_1989": "https://www.rottentomatoes.com/m/friday_the_13th_part_8_jason_takes_manhattan",
-    "friday_the_13th_2009": "https://www.rottentomatoes.com/m/friday_the_13th_prequel",
-    "friday_the_13th_1980": "https://www.rottentomatoes.com/m/friday_the_13th_part_1",
-    "fright_night_1985": "https://www.rottentomatoes.com/m/1007910-fright_night",
-    "fright_night_2011": "https://www.rottentomatoes.com/m/fright_night_2011",
+    "9_2009": "1205483_nine",
+    "1408_2007": "1408",
+    "1911_2011": "1911",
+    "8_2020": "the_soul_collector_2020",
+    "21_2008": "10009192-21",
+    "2010_1984": "2010_the_year_we_make_contact",
+    "2012_2009": "2012",
+    "aftermath_2017": "aftermath_2017",
+    "the_aftermath_2019": "the_aftermath_2019",
+    "dr_strangelove_or_how_i_learned_to_stop_worrying_and_love_the_bomb_1964": "dr_strangelove",
+    "friday_the_13th_part_vi_jason_lives_1986": "friday_the_13th_part_6_jason_lives",
+    "friday_the_13th_the_new_blood_1988": "friday_the_13th_part_7_the_new_blood",
+    "friday_the_13th_part_viii_jason_takes_manhattan_1989": "friday_the_13th_part_8_jason_takes_manhattan",
+    "friday_the_13th_2009": "friday_the_13th_prequel",
+    "friday_the_13th_1980": "friday_the_13th_part_1",
+    "fright_night_1985": "1007910-fright_night",
+    "fright_night_2011": "fright_night_2011",
   };
 
+  const baseRtUrl = "https://www.rottentomatoes.com/m/";
   let rtUrl;
-
-  // Normalize the title for exception key matching
-  const normalizedTitle = mediaData.Title
-    .normalize('NFD')
-    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹½]/g, match => specialCharacterMap[match])
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\w\d\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .replace(/-/g, '_')
-    .toLowerCase();
-
-  // Create the normalized exception key
-  const exceptionKey = `${normalizedTitle}_${mediaData.Year}`;
-
   if (rtUrlExceptions[exceptionKey]) {
-    rtUrl = rtUrlExceptions[exceptionKey];
+    // Always prepend the base URL to the relative path
+    rtUrl = baseRtUrl + rtUrlExceptions[exceptionKey];
   } else {
     if (/^\d+$/.test(normalizedTitle)) {
-      rtUrl = `https://www.rottentomatoes.com/m/${normalizedTitle}_${mediaData.Year}`;
+      rtUrl = `${baseRtUrl}${normalizedTitle}_${mediaData.Year}`;
     } else {
-      rtUrl = `https://www.rottentomatoes.com/m/${normalizedTitle}`;
+      rtUrl = `${baseRtUrl}${normalizedTitle}`;
     }
   }
 
@@ -11510,7 +11492,6 @@ async function loadSeasonEpisodes(showId, seasonNumber, imdbID) {
 
       if (currentSeason && currentSeason.episode_count > 0) {
         // Fetch and store episodes
-        // await fetchAndStoreSeasonEpisodes(db, showId, seasonNumber, currentSeason.episode_count);
         await fetchAndStoreSeasonEpisodes(context, currentSeason.episode_count);
 
         // Update timestamp
@@ -12266,6 +12247,7 @@ async function initializeApplication() {
     setupSearchInputHandlers();
     setupDropdowns();
     setupPanelHoverHandlers();
+    initializeRatingsOnVisibility();
 
     // 2. Load core settings and list configurations, check setup status
     const coreDataStatus = await loadCoreAppData(db);
@@ -16321,139 +16303,128 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // Unified keyboard event handling
   document.addEventListener('keydown', (event) => {
-    // First check if the event target is an input field
-    if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
-      return; // Exit early if user is typing in an input field
-    }
+    // Ignore key events when typing in input or textarea
+    if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
 
-    // Get references to all possible active popups
+    // References to popups
     const videoModal = document.getElementById("videoModal");
     const imageModal = document.getElementById("imageModal");
     const popup = document.getElementById("popup");
 
-    // Handle Escape key for closing popups
-    if (event.key === "x" || event.key === "Escape" || event.key === "Esc") {
-      // Check for active popups in priority order
-      if (videoModal && videoModal.classList.contains("active")) {
-        closePopup('video', { fromDetailView: isFromDetailView() });
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
+    // Normalize the key
+    const key = event.key.toLowerCase();
 
-      if (imageModal && !imageModal.classList.contains("hidden")) {
-        closePopup('image');
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
-      if (popup && !popup.classList.contains("hidden")) {
-        // Try to get popup type from the popup itself or a close button inside it
-        let popupType = popup.getAttribute('data-popup-type') ||
-          popup.querySelector('[data-popup-type]')?.getAttribute('data-popup-type');
-
-        if (popupType) {
-          if (popupType === 'settings') {
-            closePopup('settings', { initialJWConfig });
+    switch (key) {
+      case "x":
+      case "escape":
+      case "esc":
+        // ESC/X: Close popups in order
+        if (videoModal && videoModal.classList.contains("active")) {
+          closePopup('video', { fromDetailView: isFromDetailView() });
+          event.preventDefault();
+          event.stopPropagation();
+          break;
+        }
+        if (imageModal && !imageModal.classList.contains("hidden")) {
+          closePopup('image');
+          event.preventDefault();
+          event.stopPropagation();
+          break;
+        }
+        if (popup && !popup.classList.contains("hidden")) {
+          let popupType = popup.getAttribute('data-popup-type') ||
+            popup.querySelector('[data-popup-type]')?.getAttribute('data-popup-type');
+          if (popupType) {
+            if (popupType === 'settings') {
+              closePopup('settings', { initialJWConfig });
+            } else {
+              closePopup(popupType);
+            }
           } else {
-            closePopup(popupType);
+            closePopup('about');
           }
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        break;
+
+      case "d":
+        // Detail View
+        {
+          const hoveredCard = document.querySelector('.media-card:hover');
+          if (hoveredCard) handleDetailView(event, hoveredCard);
+        }
+        break;
+
+      case "r":
+        // Refresh Media Card
+        {
+          const detailView = document.querySelector('.popup-content .detail-view');
+          if (detailView) {
+            handleRefreshMedia(event, detailView);
+          } else {
+            const hoveredCard = document.querySelector('.media-card:hover');
+            if (hoveredCard) {
+              handleRefreshMedia(event, hoveredCard);
+            } else {
+              showNotification('⚠️ No media to refresh.', false);
+            }
+          }
+        }
+        break;
+
+      case "t":
+        // Play Trailer
+        {
+          const detailView = document.querySelector('.popup-content .detail-view');
+          let imdbID;
+          if (detailView) {
+            imdbID = detailView.dataset.imdbid;
+          } else {
+            const hoveredCard = document.querySelector('.media-card:hover');
+            if (hoveredCard) imdbID = hoveredCard.dataset.imdbid;
+          }
+          if (!imdbID) {
+            showNotification('⚠️ No media selected for trailer.', false);
+            break;
+          }
+          const mediaData = mediaCache.get(imdbID);
+          if (mediaData?.trailers?.length > 0) {
+            openVideoModal(mediaData.trailers[0].key, !!detailView);
+          } else {
+            showNotification('⚠️ No trailer available for this media.', false);
+          }
+        }
+        break;
+
+      case "n": {
+        const detailView = document.querySelector('.popup-content .detail-view');
+        let imdbID, title;
+        if (detailView) {
+          imdbID = detailView.dataset.imdbid;
+          title = detailView.dataset.mediaTitle || 'Unknown Title';
         } else {
-          // Fallback if no data-popup-type found
-          closePopup('about');
+          const hoveredCard = document.querySelector('.media-card:hover');
+          if (hoveredCard) {
+            imdbID = hoveredCard.dataset.imdbid;
+            title = hoveredCard.dataset.mediaTitle || 'Unknown Title';
+          }
         }
-
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-    }
-
-    // Detail View 'D' key
-    if (event.key.toLowerCase() === 'd') {
-      const hoveredCard = document.querySelector('.media-card:hover');
-      if (hoveredCard) {
-        handleDetailView(event, hoveredCard);
-      }
-    }
-
-    // Refresh Media Card 'R' key
-    if (event.key.toLowerCase() === 'r') {
-      // Check if detail view is open
-      const detailView = document.querySelector('.popup-content .detail-view');
-      if (detailView) {
-        handleRefreshMedia(event, detailView);
-      } else {
-        // Otherwise check for hovered card
-        const hoveredCard = document.querySelector('.media-card:hover');
-        if (hoveredCard) {
-          handleRefreshMedia(event, hoveredCard);
+        if (imdbID) {
+          showNoteEditorPopup(imdbID, title);
         } else {
-          showNotification('⚠️ No media to refresh.', false);
+          showNotification('⚠️ No media selected for note.', false);
         }
+        break;
       }
+
+      // Add more key cases as needed
+
+      default:
+        // No action
+        break;
     }
-
-    // Play Trailer 'T' key
-    if (event.key.toLowerCase() === 't') {
-      // First check if detail view is open
-      const detailView = document.querySelector('.popup-content .detail-view');
-      let imdbID;
-
-      if (detailView) {
-        imdbID = detailView.dataset.imdbid;
-      } else {
-        // Otherwise check for hovered card
-        const hoveredCard = document.querySelector('.media-card:hover');
-        if (hoveredCard) {
-          imdbID = hoveredCard.dataset.imdbid;
-        }
-      }
-
-      if (!imdbID) {
-        showNotification('⚠️ No media selected for trailer.', false);
-        return;
-      }
-
-      // Try to get trailer from cache
-      const mediaData = mediaCache.get(imdbID);
-      if (mediaData?.trailers?.length > 0) {
-        openVideoModal(mediaData.trailers[0].key, detailView !== null);
-      } else {
-        showNotification('⚠️ No trailer available for this media.', false);
-      }
-    }
-
-    // Add Note 'N' key
-    if (event.key.toLowerCase() === 'n') {
-      // First check if detail view is open
-      const detailView = document.querySelector('.popup-content .detail-view');
-      let imdbID, title;
-
-      if (detailView) {
-        imdbID = detailView.dataset.imdbid;
-        title = detailView.querySelector('.detail-title .title')?.textContent || 'Unknown Title';
-      } else {
-        // Otherwise check for hovered card
-        const hoveredCard = document.querySelector('.media-card:hover');
-        if (hoveredCard) {
-          imdbID = hoveredCard.dataset.imdbid;
-          // Always prefer data-media-title, fallback to tooltip if needed
-          title = hoveredCard.dataset.mediaTitle || hoveredCard.querySelector('.tooltip-text .title')?.textContent || 'Unknown Title';
-        }
-      }
-
-      if (imdbID) {
-        showNoteEditorPopup(imdbID, title);
-      } else {
-        showNotification('⚠️ No media selected for note.', false);
-      }
-    }
-
-    // Add other keyboard handlers as needed
   });
 
   window.addEventListener('beforeinstallprompt', (e) => {
