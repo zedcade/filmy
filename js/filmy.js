@@ -4,7 +4,7 @@
  * Leveraging IndexedDB and LocalStorage
  * filmy provides a seamless experience for cataloging and exploring your personal media collection
  * 
- * @param {API keys} from @OMDB and @TMDB are required for the script to operate
+ * API keys from OMDB and TMDB are required for the script to operate
  * 
  * Fully developed through AI-assisted coding techniques
  * Built with pure JavaScript - No frameworks, No external libraries, No Headaches
@@ -200,17 +200,17 @@ let activeGenres = [];
 let activeMediaType = null;
 let previousMediaType = null;
 let filteredRecords = [];
-let linksMap = []; 
+// let linksMap = []; 
 let listsMap = {}; 
 let activeLists = [];
 let allListsMeta = [];
 let customListsMeta = [];
-let activeCustomLists = [];
+// let activeCustomLists = [];
 
 /* tooltip and UI related */
-let hideTimeout; // Timeout for hiding tooltips
+// let hideTimeout; // Timeout for hiding tooltips
 let closeButtonTimeout; // Timeout for hiding video close button
-let debounceTimeout; // Timeout for debouncing
+// let debounceTimeout; // Timeout for debouncing
 const videoStatusCache = new Map();
 
 /* detail view & slideshow */
@@ -221,19 +221,19 @@ let currentBackdropIndex = 0;
 let initialJWConfig = {};
 
 /* filters */
-const filters = {}; // Global filters object
-let activeFilter = null; // Track the currently active filter ###unused
+// const filters = {}; // Global filters object
+// let activeFilter = null; // Track the currently active filter ###unused
 let activeSearchQuery = null; // Track the currently active search query
 let searchAbortController = null; // For canceling in-progress searches
-let mediaCacheSorted = null;
-let searchCategory = "All"; // ###unused
+// let mediaCacheSorted = null;
+// let searchCategory = "All"; // ###unused
 let activeCountry = "All";
 let activeStartYear = null;
 let activeEndYear = null;
 let defaultStartYear = null;
 let defaultEndYear = null;
-let lastMinYearSliderValue = null;
-let lastMaxYearSliderValue = null;
+// let lastMinYearSliderValue = null;
+// let lastMaxYearSliderValue = null;
 let yearRangeMin, yearRangeMax, startYearLabel, endYearLabel;
 let yearSliderTrack, minYear, maxYear;
 let yearSortActive = false;
@@ -259,8 +259,8 @@ let currentJumpLetter = null;   // Last jumped letter
 let currentJumpIndex = null;    // Last jumped record index
 let startIndex = 0;             // Current batch start index
 let endIndex = 0;               // Current batch end index
-let currentPage = 0;            // Current page number
-let indexedGrid = null;         // Instance of the indexed grid system ###unused
+//let currentPage = 0;            // Current page number
+//let indexedGrid = null;         // Instance of the indexed grid system ###unused
 let letterIndex = null;         // Letter index map for quick jumps
 let isObserving = false; // Track observer state globally
 let isJumping = false;
@@ -287,20 +287,13 @@ let deferredPrompt;
 */
 let isFetching = false; // Prevent multiple fetches at once
 const omdbRateLimit = 1000; // Daily limit per OMDB key
-const omdbThrottleLimit = 50;
-const omdbThrottleInterval = 1000;
+//const omdbThrottleLimit = 50;
+//const omdbThrottleInterval = 1000;
 const tmdbThrottleLimit = 50;
 const tmdbThrottleInterval = 1000; // 1 second
 const omdbApiBaseUrl = "https://www.omdbapi.com/";
 const tmdbApiBaseUrl = "https://api.themoviedb.org/3/";
 const tmdbImgBaseUrl = "https://image.tmdb.org/t/p/";
-const tmdbImageConfig = { // ###unused (for now)
-  backdrop: ["w300", "w780", "w1280", "original"],
-  logo: ["w45", "w92", "w154", "w185", "w300", "w500", "original"],
-  poster: ["w92", "w154", "w185", "w342", "w500", "w780", "original"],
-  profile: ["w45", "w185", "h632", "original"],
-  still: ["w92", "w185", "w300", "original"]
-};
 
 /* Context map for TMDB endpoints to transform and store in indexedDB */
 const endpointContextMap = {
@@ -349,11 +342,13 @@ const searchMapping = {
 
 /* Icon SVG/Template config */
 const svgPlaceholderProfile = `<svg class="placeholder-profile"><use href="#placeholder_profile" class="low-opacity" /></svg>`;
+/*
 const svgPlaceholderPoster = `<svg class="placeholder-poster"><use href="#filmy_logo" class="low-opacity" /></svg>`;
 const svgMaximize = `<svg class="icon-svg"><use href="#maximize"/></svg>`;
 const svgMinimize = `<svg class="icon-svg"><use href="#minimize"/></svg>`;
 const svgDownload = `<svg class="icon-svg"><use href="#download"/></svg>`;
 const svgGrid = `<svg class="icon-svg"><use href="#grid"/></svg>`;
+*/
 const svgAward = `<svg class="icon-svg"><use href="#award"/></svg>`;
 const svgSet =`<svg class="icon-svg"><use href="#set"/></svg>`;
 
@@ -395,14 +390,14 @@ const iconListConfig = {
 // Global timer variable
 let mouseTimer;
 const inactivityTime = 3000; // 3 seconds inactivity
-window.isAdjustingTooltipScroll = false;
+// window.isAdjustingTooltipScroll = false;
 
 /** DOM elements */
 const ratingsFilterButton = document.getElementById("ratings-filter-button");
 const gridSizeSlider = document.getElementById('gridSizeSlider');
 const gridSizeValue = document.getElementById('gridSizeValue');
-const cardGrid = document.querySelector('.card-grid');
-const mediaCards = document.querySelectorAll('.media-card');
+// const cardGrid = document.querySelector('.card-grid');
+// const mediaCards = document.querySelectorAll('.media-card');
 
 const weightedRating = {
   minVotes: 1000,
@@ -1120,7 +1115,7 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
         }
       }
 
-      tmdbID = selectedMedia.id || tmdbData?.id;
+      tmdbID = selectedMedia.id;
       title = selectedMedia.title || selectedMedia.name;
     }
 
@@ -1246,7 +1241,7 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
         if (data && Object.keys(data).length > 0) {
           await saveToDatabase(db, data, storeName);
         }
-      } catch (error) {
+      } catch {
         failedEndpoints.push(storeName);
       }
     }
@@ -2182,39 +2177,53 @@ function tmdbErrorHandler(error, _item, url) {
 async function queryTMDB(data, endpoint, tmdbCategory, isBackgroundProcess = false) {
   const results = [];
 
-  const stats = await queryAPI(
+  await queryAPI(
     data,
     (item, apiKey) => {
-      const tmdbID = item.tmdbID;
-      const title = item.title?.trim();
-      const year = item.year;
+      const { tmdbID, title, year, customEndpoint } = item;
 
-      if (endpoint === "search") {
-        if (!title || !year) return null; // Skip invalid search queries
-        return `${tmdbApiBaseUrl}search/${tmdbCategory}?api_key=${apiKey}&query=${encodeURIComponent(title)}&year=${year}`;
+      // Unified URL builder with validation
+      switch (endpoint) {
+        case "search": {
+          if (!title?.trim() || !year) {
+            console.warn("Skipping search query - missing title/year:", item);
+            return null;
+          }
+          return `${tmdbApiBaseUrl}search/${tmdbCategory}?api_key=${apiKey}&query=${encodeURIComponent(title)}&year=${year}`;
+        }
+
+        case "details": {
+          if (!tmdbID) {
+            console.warn("Skipping details query - missing tmdbID:", item);
+            return null;
+          }
+          return `${tmdbApiBaseUrl}${tmdbCategory}/${tmdbID}?api_key=${apiKey}`;
+        }
+
+        case "custom": {
+          if (!tmdbID || !customEndpoint) {
+            console.warn("Skipping custom query - missing tmdbID/endpoint:", item);
+            return null;
+          }
+          const separator = customEndpoint.includes("?") ? "&" : "?";
+          return `${tmdbApiBaseUrl}${tmdbCategory}/${tmdbID}/${customEndpoint}${separator}api_key=${apiKey}`;
+        }
+
+        default: {
+          console.warn("Unknown TMDB endpoint:", endpoint);
+          return null;
+        }
       }
-
-      if (endpoint === "details" && tmdbID) {
-        return `${tmdbApiBaseUrl}${tmdbCategory}/${tmdbID}?api_key=${apiKey}`;
-      }
-
-      if (endpoint === "custom" && tmdbID && item.endpoint) {
-        const hasParams = item.endpoint.includes('?');
-        return `${tmdbApiBaseUrl}${tmdbCategory}/${tmdbID}/${item.endpoint}${hasParams ? '&' : '?'}api_key=${apiKey}`;
-      }
-
-      console.warn("Skipping invalid TMDB query:", item);
-      return null;
     },
     () => apiKeyManager.getTmdbKey(),
     tmdbThrottleLimit,
     tmdbThrottleInterval,
-    (result) => results.push(result),
-    tmdbErrorHandler, // Pass custom error handler
-    isBackgroundProcess // Pass the flag
+    (result) => result !== undefined && results.push(result), // Filter here
+    tmdbErrorHandler,
+    isBackgroundProcess
   );
 
-  return results.filter(item => item !== undefined);
+  return results;
 }
 
 // Simple TMDB query helper function
@@ -2241,7 +2250,7 @@ async function queryOMDB(imdbID, retryCount = 0) {
     if (response.status === 401) {
       console.warn(`API key is invalid or expired`);
       // Mark this key as reached limit to avoid using it again
-      await setApiCallCount(apiKey, omdbRateLimit);
+      setApiCallCount(apiKey, omdbRateLimit);
 
       // Try again with a different key (but limit retries)
       if (retryCount < apiKeyManager.getOmdbKeys().length - 1) {
@@ -2258,11 +2267,11 @@ async function queryOMDB(imdbID, retryCount = 0) {
     const data = await response.json();
 
     // Successfully used the API key - update its count
-    await updateApiCallCount(apiKey);
+    updateApiCallCount(apiKey);
 
     // Filter out N/A values from OMDB response
     return Object.fromEntries(
-      Object.entries(data).filter(([_, v]) => v !== "N/A")
+      Object.entries(data).filter(([, v]) => v !== "N/A")
     );
   } catch (error) {
     // If it's not already a 401 error we handled above, rethrow it
@@ -2489,7 +2498,7 @@ function showCustomConfirm(message, onConfirm) {
     `;
     
     // Use the showPopup function with custom event listeners
-    const popup = showPopup('confirm', confirmContent, {
+    showPopup('confirm', confirmContent, {
       listeners: {
         '#confirm-cancel': {
           click: () => {
@@ -3555,7 +3564,7 @@ async function restoreDatabase(files, db) {
         reader.onload = (event) => {
           try {
             resolve(JSON.parse(event.target.result));
-          } catch (err) {
+          } catch {
             reject(new Error(`Invalid JSON format in file ${file.name}.`));
           }
         };
@@ -3583,7 +3592,7 @@ async function restoreDatabase(files, db) {
       reader.onload = (event) => {
         try {
           resolve(JSON.parse(event.target.result));
-        } catch (err) {
+        } catch {
           reject(new Error("Invalid JSON format in first file."));
         }
       };
@@ -3620,7 +3629,7 @@ async function restoreDatabase(files, db) {
         reader.onload = (event) => {
           try {
             resolve(JSON.parse(event.target.result));
-          } catch (err) {
+          } catch {
             reject(new Error(`Invalid JSON format in file ${sortedFiles[i].name}.`));
           }
         };
@@ -3653,7 +3662,7 @@ async function restoreDatabase(files, db) {
         reader.onload = (event) => {
           try {
             resolve(JSON.parse(event.target.result));
-          } catch (err) {
+          } catch {
             reject(new Error(`Invalid JSON format in file ${file.name}.`));
           }
         };
@@ -4223,13 +4232,13 @@ async function applyFiltersAndSearch(triggeredBy = null, shouldSort = true, preF
       yearSortAscending = true;
       yearFilterButton.classList.remove('sort-desc');
       yearFilterButton.classList.add('sort-asc');
-      lastMinYearSliderValue = activeStartYear;
+      // lastMinYearSliderValue = activeStartYear;
       currentSortField = "year"; // Set the current sort field to year
     } else if (triggeredBy === "max") {
       yearSortAscending = false;
       yearFilterButton.classList.remove('sort-asc');
       yearFilterButton.classList.add('sort-desc');
-      lastMaxYearSliderValue = activeEndYear;
+      // lastMaxYearSliderValue = activeEndYear;
       currentSortField = "year"; // Set the current sort field to year
     }
   } else {
@@ -4417,14 +4426,14 @@ function updateActiveYears() {
     defaultStartYear = activeStartYear;
     defaultEndYear = activeEndYear;
     // Cache sorted results globally for later use.
-    mediaCacheSorted = sortedCache;
+    // mediaCacheSorted = sortedCache;
   } else {
     // Reset to default values if the cache is empty
     activeStartYear = null;
     activeEndYear = null;
     defaultStartYear = null;
     defaultEndYear = null;
-    mediaCacheSorted = null;
+    // mediaCacheSorted = null;
   }
 }
 
@@ -4540,14 +4549,6 @@ function removeFromMediaCache(imdbID) {
 }
 
 /**
- * Reset the entire movie cache. ### unused
- */
-function resetMediaCache() {
-  mediaCache.clear(); // Clear the entire cache
-  console.log("Movie cache has been cleared.");
-}
-
-/**
  * Updates the background color of the custom slider track based on the selected range.
  * @param {HTMLInputElement} rangeStart - The start range input element.
  * @param {HTMLInputElement} rangeEnd - The end range input element.
@@ -4659,8 +4660,8 @@ function resetYearFilters() {
   yearFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
 
   // Reset all year sort state variables
-  lastMinYearSliderValue = null;
-  lastMaxYearSliderValue = null;
+  // lastMinYearSliderValue = null;
+  // lastMaxYearSliderValue = null;
   yearSortActive = false;  // Reset the new sort state variable
   yearSortAscending = true;  // Reset to default
 
@@ -4722,11 +4723,11 @@ function initializeYearSlider() {
 function initializeListFilters() {
   // Get all available lists from listsMap (core + custom)
   const availableLists = Object.entries(listsMap)
-    .filter(([_, config]) =>
+    .filter(([, config]) =>
       // Only include lists for the current user or default lists
       config.username === userSettings.username || config.username === 'default'
     )
-    .filter(([_, config]) =>
+    .filter(([, config]) =>
       // Only include lists that should be shown in filters
       config.type === 'core' || config.showInFilters
     )
@@ -4919,83 +4920,6 @@ function updateAllRatingValues(sliders) {
     // Update slider track colors
     updateRatingSliderTrack(rangeStart, rangeEnd, track, parseFloat(min), parseFloat(max));
   });
-}
-
-/**
- * Resets all rating sliders to their default values and clears global variables.
- */
-function resetRatingsFilters(sliders) {
-  // Check if any rating filters are active
-  const hasActiveFilters = (
-    activeMinImdb !== null ||
-    activeMaxImdb !== null ||
-    activeMinTmdb !== null ||
-    activeMaxTmdb !== null ||
-    activeMinMetascore !== null ||
-    activeMaxMetascore !== null ||
-    activeMinRT !== null ||
-    activeMaxRT !== null
-  );
-
-  // Check if any rating sort is active
-  const hasActiveSort = currentSortField === 'imdb' ||
-    currentSortField === 'tmdb' ||
-    currentSortField === 'metascore' ||
-    currentSortField === 'rt' ||
-    currentSortField === 'weighted';
-
-  if (!hasActiveFilters && !hasActiveSort) {
-    console.log("No rating filters or sorts active. Skipping reset.");
-    return;
-  }
-
-  // Reset global variables
-  activeMinImdb = null;
-  activeMaxImdb = null;
-  activeMinTmdb = null;
-  activeMaxTmdb = null;
-  activeMinMetascore = null;
-  activeMaxMetascore = null;
-  activeMinRT = null;
-  activeMaxRT = null;
-
-  // Reset slider values
-  if (sliders) {
-    Object.values(sliders).forEach(({ rangeStart, rangeEnd }) => {
-      rangeStart.value = "0";
-      rangeEnd.value = "100";
-      rangeStart.classList.remove("active");
-      rangeEnd.classList.remove("active");
-    });
-
-    // Update slider tracks and thumb positions
-    Object.values(sliders).forEach(({ rangeStart, rangeEnd, track, min, max }) => {
-      updateRatingThumbValue(rangeStart, rangeStart.nextElementSibling);
-      updateRatingThumbValue(rangeEnd, rangeEnd.nextElementSibling);
-      updateRatingSliderTrack(rangeStart, rangeEnd, track, parseFloat(min), parseFloat(max));
-    });
-  }
-
-  // Reset sort state
-  currentSortField = null;
-  currentSortOrder = 'desc'; // Reset to default
-
-  const ratingsFilterButton = document.getElementById('ratings-filter-button');
-  ratingsFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
-
-  document.querySelectorAll('.rating-filter, .rating-filter-icon').forEach(icon => {
-    icon.classList.remove('sort-asc', 'sort-desc');
-  });
-
-  if (hasActiveSort) {
-    showNotification('Sorting by title (A-Z)', false);
-  }
-
-  // Reapply filters only if necessary
-  applyFiltersAndSearch(null, true);
-
-  // Update button state dynamically
-  updateFilterButtonState(document.getElementById("ratings-filter-button"));
 }
 
 /**
@@ -5312,7 +5236,7 @@ async function queryIndexedDB(db, storeName, fields, value, normFn = normalizeFo
           console.error(`Error querying index "${fields[0]}" in store "${storeName}":`, request.error);
           reject(request.error);
         };
-      } catch (e) {
+      } catch {
         // Fallback to manual exact matching
         const request = store.getAll();
         request.onsuccess = () => {
@@ -6155,13 +6079,15 @@ function generateTooltip(mediaData) {
 
   // Common function to generate trailer links
   const generateTrailerLinks = (trailers) => trailers
-  .map(trailer => `
+    .map(trailer => `
     <li class="url-line">
-      <div class="full-link" onclick="openVideoModal('${trailer.key}')">
+      <div class="full-link"
+           data-video-key="${trailer.key}"
+           data-media-type="trailer">
         <span class="url-ttip-txt">${trailer.name || 'Trailer'}</span>
       </div>
     </li>`
-  ).join('');
+    ).join('');
 
   // Always add JustWatch link first
   tooltipListContent = `
@@ -6351,12 +6277,13 @@ function updateFilterButtonState(button) {
     case "collection-filter-icon":
       isActive = activeLists.some(item => item.name === button.id.replace("-filter-icon", "") && item.type === 'core');
       break;
-    case "customlist-filter-icon":
+    case "customlist-filter-icon": {
       const panel = document.getElementById('customlist-dropdown-panel');
       // Keep icon active if panel is open, OR if any custom list filter is active
       isActive = (panel && !panel.classList.contains('hidden')) ||
         activeLists.some(item => item.type === 'custom');
       break;
+    }
   }
 
   // Toggle the "active" class based on the state
@@ -6403,7 +6330,6 @@ function debounce(func, delay, useGlobal = false) {
 function throttle(func, limit) {
   let inThrottle = false;
   let lastFunc;
-  let lastRan;
 
   return function (...args) {
     const context = this;
@@ -6411,7 +6337,6 @@ function throttle(func, limit) {
     if (!inThrottle) {
       // If not currently throttled, execute immediately
       func.apply(context, args);
-      lastRan = Date.now();
       inThrottle = true;
 
       // Reset throttle flag after the limit
@@ -6541,7 +6466,7 @@ function resetGrid(resetPagination = true) {
 
   if (resetPagination) {
     renderedMediaIDs.clear(); // Prevent duplicate renders
-    currentPage = 0;
+    //currentPage = 0;
     startIndex = 0;
     endIndex = 0;
     // console.log("Full pagination reset");
@@ -6629,7 +6554,7 @@ function jumpToLetter(letter) {
 
       startIndex = Math.max(0, targetIndex - Math.floor(pageSize / 2));
       endIndex = Math.min(filteredRecords.length, startIndex + pageSize);
-      currentPage = Math.floor(startIndex / pageSize);
+      //currentPage = Math.floor(startIndex / pageSize);
       
       renderCard(filteredRecords.slice(startIndex, endIndex));
     }
@@ -6855,7 +6780,7 @@ function loadPaginatedRecords(startIdx = 0) {
   // Update indices before DOM operations
   startIndex = startIdx;
   endIndex = endIdx;
-  currentPage = Math.floor(endIdx / pageSize);
+  //currentPage = Math.floor(endIdx / pageSize);
   
   // Then perform DOM operations
   if (startIdx === 0) {
@@ -7076,31 +7001,28 @@ function sortRecords(media, criteria = "title", ascending = true) {
     return sortedRecords;
   }
 
-/*
-  // Debug the problematic records before sorting
-  if (criteria === "year") {
-    const problemRecords = sortedRecords.filter(item =>
-      item.imdbID.startsWith('tmdb-')
-    );
-
-    console.log("Problem records before sort:", problemRecords.map(r => ({
-      id: r.imdbID,
-      year: r.Year,
-      numericYear: r.numericYear,
-      type: typeof r.numericYear
-    })));
-  }
-*/
   return sortedRecords.sort((a, b) => {
     let valueA, valueB;
 
     switch (criteria) {
-      case "title":
-        valueA = normalizeForSort(a.Title);
-        valueB = normalizeForSort(b.Title);
-        dataTitleA = a.dataTitle;
-        dataTitleB = b.dataTitle;
+      case "title": {
+        // Use raw titles for franchise detection
+        const titleA = a.Title || "";
+        const titleB = b.Title || "";
+        
+        // Check for franchise relationship (one title is a subset of the other plus a number)
+        const franchiseMatch = isSameMovieFranchise(titleA, titleB);
+        
+        if (franchiseMatch) {
+          // If they're part of the same franchise, sort by sequel number
+          return ascending ? franchiseMatch : -franchiseMatch;
+        }
+        
+        // If not part of same franchise, use normalized titles for standard sorting
+        valueA = normalizeForSort(titleA);
+        valueB = normalizeForSort(titleB);
         break;
+      }
       case "year":
         valueA = a.numericYear || 0;
         valueB = b.numericYear || 0;
@@ -7130,11 +7052,11 @@ function sortRecords(media, criteria = "title", ascending = true) {
         return 0;
     }
 
-    // Handle numeric/natural sorting for titles
+    // Handle all sorting with the same approach
     if (criteria === "title") {
-      const comparison = compareAlphanumeric(valueA, valueB, dataTitleA, dataTitleB);
-      // const comparison = compareAlphanumeric(valueA, valueB);
-      return ascending ? comparison : -comparison;
+      return ascending ? 
+        valueA.localeCompare(valueB, undefined, {numeric: true, sensitivity: 'base'}) : 
+        valueB.localeCompare(valueA, undefined, {numeric: true, sensitivity: 'base'});
     }
 
     // Handle numeric comparisons for other criteria
@@ -7143,48 +7065,132 @@ function sortRecords(media, criteria = "title", ascending = true) {
   });
 }
 
-
-function compareAlphanumeric(str1, str2, dataTitle1, dataTitle2) {
-  // Extract the first word of each title for franchise detection
-  const getFirstWord = (str) => {
-    return str.toLowerCase().split(/\s+/)[0];
-  };
+/**
+ * Determines if two movie titles are part of the same franchise
+ * and returns a sort value based on their sequel numbers
+ * @param {string} titleA - First movie title
+ * @param {string} titleB - Second movie title
+ * @returns {number|null} - Positive if A comes before B, negative if B comes before A, null if not same franchise
+ */
+function isSameMovieFranchise(titleA, titleB) {
+  // Clean titles for comparison (lowercase, no special chars)
+  const cleanA = titleA.toLowerCase().replace(/[^\w\s]/g, "");
+  const cleanB = titleB.toLowerCase().replace(/[^\w\s]/g, "");
   
-  // Get full normalized title for complete comparison
-  const getNormalizedTitle = (str) => {
-    return str.toLowerCase()
-      .replace(/^(the|a|an)\s+/i, '')  // Only remove articles at the beginning
-      .trim();
-  };
-  
-  const firstWord1 = getFirstWord(str1);
-  const firstWord2 = getFirstWord(str2);
-  const normalized1 = getNormalizedTitle(str1);
-  const normalized2 = getNormalizedTitle(str2);
-  
-  // Check if one title completely contains the other (franchise detection)
-  const isSubtitle = normalized1.includes(normalized2) || normalized2.includes(normalized1);
-  
-  // If same first word AND one title contains the other (franchise relationship)
-  if (firstWord1 === firstWord2 && isSubtitle) {
-    // First sort by title length (shorter main title comes first)
-    if (normalized1.length !== normalized2.length) {
-      return normalized1.length - normalized2.length;
+  // Extract base name and sequel number
+  const extractInfo = (title) => {
+    // Match patterns like "Title 2", "Title II", "Title Part 2", etc.
+    const match = title.match(/^(.+?)(?:\s+(?:part\s+)?(\d+|[ivx]+))?(?:\s*:.*)?$/i);
+    if (match) {
+      const baseName = match[1].trim();
+      let sequelNum = match[2] ? match[2].toLowerCase() : null;
+      
+      // Convert Roman numerals to numbers if needed
+      if (sequelNum && /^[ivx]+$/.test(sequelNum)) {
+        const romanValues = { i: 1, v: 5, x: 10 };
+        let value = 0;
+        for (let i = 0; i < sequelNum.length; i++) {
+          const current = romanValues[sequelNum[i]];
+          const next = romanValues[sequelNum[i + 1]] || 0;
+          value += current < next ? -current : current;
+        }
+        sequelNum = value.toString();
+      }
+      
+      return { baseName, sequelNum: sequelNum ? parseInt(sequelNum, 10) : 0 };
     }
-    
-    // If same length, sort by year
-    const yearA = dataTitle1?.year || parseInt(dataTitle1?.Year || 0, 10);
-    const yearB = dataTitle2?.year || parseInt(dataTitle2?.Year || 0, 10);
-    if (yearA !== yearB) return yearA - yearB;
-    
-    // Fallback to numeric suffix comparison
-    const num1 = parseInt(str1.match(/\d+/)?.[0] || 0, 10);
-    const num2 = parseInt(str2.match(/\d+/)?.[0] || 0, 10);
-    return num1 - num2;
+    return { baseName: title, sequelNum: 0 };
+  };
+  
+  const infoA = extractInfo(cleanA);
+  const infoB = extractInfo(cleanB);
+  
+  // Check if they share the same base name
+  if (infoA.baseName === infoB.baseName) {
+    // Sort by sequel number
+    return infoA.sequelNum - infoB.sequelNum;
   }
   
-  // Different titles or not in franchise relationship, use standard sort
-  return str1.localeCompare(str2, undefined, {numeric: true, sensitivity: 'base'});
+  // Special case for "Anchorman" series which has a subtitle
+  if (cleanA.startsWith("anchorman") && cleanB.startsWith("anchorman")) {
+    // Extract numbers after "anchorman"
+    const numA = cleanA.match(/anchorman\s+(\d+)/i);
+    const numB = cleanB.match(/anchorman\s+(\d+)/i);
+    
+    const seqA = numA ? parseInt(numA[1], 10) : 0;
+    const seqB = numB ? parseInt(numB[1], 10) : 0;
+    
+    return seqA - seqB;
+  }
+  
+  // Not the same franchise
+  return null;
+}
+
+/**
+ * Enhanced function to convert roman numerals and spelled-out numbers to digits.
+ * This applies to both standalone numerals and those with prefixes like "Part" or "Episode".
+ */
+function normalizeNumerals(title) {
+  if (!title) return "";
+  
+  // Mapping for Roman numerals
+  const romanMap = {
+    ' i': ' 1',
+    ' ii': ' 2',
+    ' iii': ' 3',
+    ' iv': ' 4',
+    ' v': ' 5',
+    ' vi': ' 6',
+    ' vii': ' 7',
+    ' viii': ' 8',
+    ' ix': ' 9',
+    ' x': ' 10'
+  };
+
+  // Mapping for spelled-out English numbers
+  const englishMap = {
+    'one': '1',
+    'two': '2',
+    'three': '3',
+    'four': '4',
+    'five': '5',
+    'six': '6',
+    'seven': '7',
+    'eight': '8',
+    'nine': '9',
+    'ten': '10'
+  };
+
+  // Convert to lowercase for consistent processing
+  let normalizedTitle = title.toLowerCase();
+  
+  // First, handle "Part X" or "Episode X" patterns
+  normalizedTitle = normalizedTitle.replace(
+    /\b(part|episode)\s+(i|ii|iii|iv|v|vi|vii|viii|ix|x|one|two|three|four|five|six|seven|eight|nine|ten)\b/g, 
+    (match, prefix, numeral) => {
+      // Check if it's a Roman numeral
+      if (/^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/i.test(numeral)) {
+        const num = romanMap[' ' + numeral];
+        return prefix + num;
+      } else {
+        // It's a spelled-out number
+        const num = englishMap[numeral];
+        return prefix + ' ' + num;
+      }
+    }
+  );
+  
+  // Then handle standalone Roman numerals at the end of titles or after a space
+  // This is important for titles like "Halloween III" or "Star Wars V"
+  normalizedTitle = normalizedTitle.replace(
+    /\s(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/g,
+    (match) => {
+      return romanMap[match] || match;
+    }
+  );
+  
+  return normalizedTitle;
 }
 
 /* Normalization for names/keywords – no roman numerals or fraction replacements */
@@ -7197,7 +7203,6 @@ function normalizeForName(name) {
  * Normalize titles for sorting (removes leading articles)
  */
 function normalizeForSort(title) {
-  // Remove leading articles from the original title
   const withoutArticles = title.replace(/^(the |a |an )/i, "");
   return normalizeForSearch(withoutArticles);
 }
@@ -7236,66 +7241,6 @@ function normalizeForSearch(title) {
     .replace(/\s+/g, " ")
     .replace(/([a-zA-Z])(\d)/g, "$1 $2") // add space between a letter and a number (A2 = A 2)
     .trim();
-}
-
-/**
- * Convert roman numerals and spelled-out part numbers to digits.
- * This normalization targets titles with "Part" or "Episode" specifiers.
- */
-function normalizeNumerals(title) {
-  // Mapping for Roman numerals, keys include a leading space.
-  const romanMap = {
-    ' I': ' 1',
-    ' II': ' 2',
-    ' III': ' 3',
-    ' IV': ' 4',
-    ' V': ' 5',
-    ' VI': ' 6',
-    ' VII': ' 7',
-    ' VIII': ' 8',
-    ' IX': ' 9'
-  };
-
-  // Mapping for spelled-out English numbers (without a leading space)
-  const englishMap = {
-    'one': '1',
-    'two': '2',
-    'three': '3',
-    'four': '4',
-    'five': '5',
-    'six': '6',
-    'seven': '7',
-    'eight': '8',
-    'nine': '9',
-    'ten': '10'
-  };
-
-  // First, convert any numbered prefixed with "Part" or "Episode".
-  // This regex captures:
-  //   group 1: the prefix (Part or Episode) followed by whitespace,
-  //   group 2: a numeral (Roman numeral or English word) without any extra space.
-  title = title.replace(/\b(Part|Episode)\s+(I|II|III|IV|V|VI|VII|VIII|IX|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)\b/gi, (_, prefix, numeral) => {
-    if (/^(I|II|III|IV|V|VI|VII|VIII|IX)$/i.test(numeral)) {
-      // For a Roman numeral, we add a leading space before lookup.
-      // The romanMap expects keys like " IV".
-      let rep = romanMap[" " + numeral.toUpperCase()];
-      // Original behavior: if a prefix exists, simply concatenate without adding an extra space.
-      return prefix + rep;
-    } else {
-      // For English numbers, lookup in englishMap.
-      let rep = englishMap[numeral.toLowerCase()];
-      return prefix + " " + rep;
-    }
-  });
-
-  // Second, if there is no prefix, only convert a numeral if it appears at the very end.
-  // This ensures that strings like "Rocky I am" remain unchanged.
-  title = title.replace(/((?:\sI)|(?:\sII)|(?:\sIII)|(?:\sIV)|(?:\sV)|(?:\sVI)|(?:\sVII)|(?:\sVIII)|(?:\sIX))\b$/, (match) => {
-    // `match` should already include the leading space.
-    return romanMap[match] || match;
-  });
-
-  return title;
 }
 
 /**
@@ -7481,7 +7426,7 @@ async function populateGenres(db) {
         !storedTimestamp || (currentDate - new Date(storedTimestamp)) > 30 * 24 * 60 * 60 * 1000;
 
       if (isOutdated) {
-        console.log("Genres data is outdated. Fetching updated genres...");
+        console.log("Genres data is stale. Fetching updated genres...");
         await fetchAndUpdateGenres(db);
         localStorage.setItem(lastUpdatedKey, currentDate.toISOString());
       } else {
@@ -8298,7 +8243,7 @@ async function showSettingsPopup(onFirstProfileSavedCallback) {
   `;
 
   // --- Display Popup ---
-  const popup = showPopup('settings', settingsContent);
+  showPopup('settings', settingsContent);
 
   // --- Populate Form Fields ---
   loadUserSettingsDB(currentUserSettings, isFirstUser);
@@ -9312,12 +9257,12 @@ function updateProviderGrid(data, settings) {
   }
 
   const selectedCountry = countryDropdown.value;
-  const selectedType = typeDropdown.value; // Always "all" until we can get the types via api
+  // const selectedType = typeDropdown.value; // Always "all" until we can get the types via api
 
   // Filter providers that have a display priority for the selected region
   const filteredProviders = data.filter(provider =>
     provider.display_priorities &&
-    provider.display_priorities.hasOwnProperty(selectedCountry)
+    Object.prototype.hasOwnProperty.call(provider.display_priorities, selectedCountry)
   );
 
   // Deduplicate providers by provider_name
@@ -9972,7 +9917,7 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
   const companiesAndNetworksHTML = generateCompaniesAndNetworksHTML(mediaData);
 
   // Financial information - only for movies
-  financialsHTML = isMovie ? generateFinancialsHTML(mediaData) : "";
+  const financialsHTML = isMovie ? generateFinancialsHTML(mediaData) : "";
 
   const taglineHTML = mediaData.tagline ? `<div class="tagline">${mediaData.tagline}</div>` : "";
 
@@ -10070,7 +10015,7 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
           const textarea = document.createElement('textarea');
           textarea.innerHTML = personData.biography;
           return textarea.value
-            .replace(/[\u200b\u200c\u200d\u200e\u200f\uFEFF]/g, '') // Remove various zero-width characters and BOM
+            .replace(/\u200B|\u200C|\u200D|\u200E|\u200F|\uFEFF/gu, '') // Remove various zero-width characters and BOM
             .replace(/\u00A0/g, ' ') // Replace actual non-breaking space character
             .replace(/(\S+) \((\d{4})\)/g, '$1\u00A0($2)'); // Then add back only where needed
         })()
@@ -10227,24 +10172,34 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     const sortedImages = sort
       ? imageList.sort((a, b) => (a.iso_639_1 || "").localeCompare(b.iso_639_1 || ""))
       : imageList;
+
     return sortedImages.map(image => {
       if (type === 'Backdrop') {
         const thumbUrl = `${tmdbImgBaseUrl}w500${image.file_path}`;
-        // Instead of building fullUrl with resolution, pass only file_path:
-        const clickHandler = `openImageModal('${image.file_path}', '${mediaData.imdbID}', 'backdrop')`;
         return `
-      <div class="card backdrop" title="Click to Enlarge" onclick="${clickHandler}">
-        <img src="${thumbUrl}" alt="${type}" loading="lazy" />
-      </div>
-      `;
+          <div 
+            class="card backdrop"
+            title="Click to Enlarge"
+            data-file-path="${image.file_path}"
+            data-imdbid="${mediaData.imdbID}"
+            data-media-type="backdrop"
+          >
+            <img src="${thumbUrl}" alt="${type}" loading="lazy" />
+          </div>
+        `;
       } else { // Poster
         const imageUrl = `${tmdbImgBaseUrl}w500${image.file_path}`;
-        const clickHandler = `openImageModal('${image.file_path}', '${mediaData.imdbID}', 'poster')`;
         return `
-      <div class="card poster" title="Click to set as Default" onclick="${clickHandler}">
-        <img src="${imageUrl}" alt="${type}" loading="lazy" />
-      </div>
-      `;
+          <div 
+            class="card poster"
+            title="Click to set as Default"
+            data-file-path="${image.file_path}"
+            data-imdbid="${mediaData.imdbID}"
+            data-media-type="poster"
+          >
+            <img src="${imageUrl}" alt="${type}" loading="lazy" />
+          </div>
+        `;
       }
     }).join("");
   }
@@ -10259,21 +10214,25 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
         ? `https://img.youtube.com/vi/${video.key}/default.jpg`
         : "";
       return `
-      <div class="card video" title="Click to play video" onclick="openVideoModal('${video.key}', true)">
-        <div class="thumbnail-container">
-          ${thumbnailUrl ? `
-            <img src="${thumbnailUrl}" alt="${video.name}" loading="lazy" class="video-thumbnail" 
-                 onerror="this.src='${fallbackUrl}'; this.onerror=null;"> 
-            <div class="play-container">
-              <svg class="yt play-icon">
-                <use href="#play_icon"></use>
-              </svg>
-            </div>
-          ` : ""}
+        <div class="card video"
+             title="Click to play video"
+             data-video-key="${video.key}"
+             data-media-type="video"
+             data-video-site="${video.site}">
+          <div class="thumbnail-container">
+            ${thumbnailUrl ? `
+              <img src="${thumbnailUrl}" alt="${video.name}" loading="lazy" class="video-thumbnail"
+                   onerror="this.src='${fallbackUrl}'; this.onerror=null;">
+              <div class="play-container">
+                <svg class="yt play-icon">
+                  <use href="#play_icon"></use>
+                </svg>
+              </div>
+            ` : ""}
+          </div>
+          <div class="card-title">${video.name}</div>
         </div>
-        <div class="card-title">${video.name}</div>
-      </div>
-    `;
+      `;
     }).join("");
   }
 
@@ -10304,12 +10263,13 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
         ? `${tmdbImgBaseUrl}w500${season.poster_path}`
         : createPlaceholderSVG(185, 278, 'poster');
 
+      /*
       const airDate = (season.season_number === 0 && !season.air_date)
         ? ""
         : (season.air_date
           ? new Date(season.air_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
           : 'TBA');
-     
+     */
       const tooltipContent = season.overview ? `<div class="tooltip-content"><div class="tooltip-bio">${season.overview}</div></div>` : `<div class="tooltip-content empty">No information available</div>`;
 
       const seasonTooltip = `
@@ -10424,7 +10384,7 @@ const similarHTML = (mediaData.similar &&
     mediaData.created_by.length > 0) {
 
     // Get creator IDs from mediaData directly
-    const creatorIds = mediaData.created_by.map(creator => creator.id);
+    // const creatorIds = mediaData.created_by.map(creator => creator.id);
 
     // Create "Created by" department entries for each creator
     const creatorCredits = mediaData.created_by.map(creator => {
@@ -11096,7 +11056,7 @@ function openImageModal(filePath, imdbID, mediaType) {
     modal.addEventListener('mousemove', handleMouseActivity);
     modal.addEventListener('mouseenter', resetTimer);
     modal.addEventListener('click', handleMouseActivity);
-    document.addEventListener('keydown', function (_e) {
+    document.addEventListener('keydown', function () {
       // Only reset timer if the modal is visible
       if (!modal.classList.contains('hidden')) {
         handleMouseActivity();
@@ -11700,7 +11660,7 @@ function renderEpisodeCards(episodes, showId, seasonNumber) {
   const episodeElements = Array.from(temp.children);
 
   // Insert each episode card after the season card
-  episodeElements.forEach((episode, index) => {
+  episodeElements.forEach(episode => {
     // Set the showId attribute
     episode.setAttribute('data-show-id', showId);
 
@@ -11855,112 +11815,6 @@ function parseTitleAndYear(input) {
     title: match[1].trim(), // Extracted title
     year: match[2] ? parseInt(match[2], 10) : null, // Extracted year or null if not present
   };
-}
-
-// DB MAINTENANCE: Show size of stores ### to do: implement into settings to manage db stores NYI
-async function calculateStoreSize(db, storeName) {
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([storeName], "readonly");
-    const store = transaction.objectStore(storeName);
-    const request = store.openCursor();
-
-    let size = 0;
-    let recordCount = 0;
-
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        // Get size based on value type
-        const value = cursor.value;
-        
-        if (value instanceof Blob) {
-          // Use native Blob size property
-          size += value.size;
-        } else if (value.blob instanceof Blob) {
-          // Handle objects that contain blobs
-          size += value.blob.size;
-        } else if (typeof value === 'object') {
-          // For regular objects, use JSON serialization
-          const serialized = JSON.stringify(value);
-          size += serialized.length * 2; // Approximate size in bytes (UTF-16 encoding)
-        } else {
-          // For primitive values
-          size += String(value).length * 2;
-        }
-        
-        recordCount++;
-        cursor.continue();
-      } else {
-        // Convert to KB or MB for readability
-        const sizeInKB = (size / 1024).toFixed(2);
-        const sizeInMB = (size / (1024 * 1024)).toFixed(2);
-
-        resolve({
-          store: storeName,
-          records: recordCount,
-          sizeBytes: size,
-          sizeKB: sizeInKB,
-          sizeMB: sizeInMB
-        });
-      }
-    };
-
-    request.onerror = (event) => {
-      reject(`Error measuring size of ${storeName}: ${event.target.errorCode}`);
-    };
-    
-    transaction.onerror = (event) => {
-      reject(`Transaction error for ${storeName}: ${event.target.error}`);
-    };
-  });
-}
-
-/**
- * Displays the size of the stores in the indexedDB
- * ### refactor later for DB management feature
- * @returns 
- */
-async function displayAllStoreSizes() {
-  try {
-    const storeNames = Array.from(db.objectStoreNames);
-    const sizePromises = storeNames.map(store => calculateStoreSize(db, store));
-    const sizes = await Promise.all(sizePromises);
-
-    // Sort by size (largest first)
-    sizes.sort((a, b) => b.sizeBytes - a.sizeBytes);
-
-    // Calculate totals
-    const totalRecords = sizes.reduce((sum, item) => sum + item.records, 0);
-    const totalSizeBytes = sizes.reduce((sum, item) => sum + parseInt(item.sizeBytes), 0);
-    const totalSizeKB = (totalSizeBytes / 1024).toFixed(2);
-    const totalSizeMB = (totalSizeBytes / (1024 * 1024)).toFixed(2);
-
-    // Display in console table
-    console.table(sizes.map(item => ({
-      "Store": item.store,
-      "Records": item.records,
-      "Size (KB)": item.sizeKB,
-      "Size (MB)": item.sizeMB
-    })));
-
-    // Display totals
-    console.log("TOTALS:");
-    console.log(`Total Records: ${totalRecords}`);
-    console.log(`Total Size: ${totalSizeKB} KB (${totalSizeMB} MB)`);
-
-    // Return both sizes and totals for further usage
-    return {
-      stores: sizes,
-      totals: {
-        records: totalRecords,
-        sizeBytes: totalSizeBytes,
-        sizeKB: totalSizeKB,
-        sizeMB: totalSizeMB
-      }
-    };
-  } catch (error) {
-    console.error("Error calculating store sizes:", error);
-  }
 }
 
 // UI: helper to format big numbers
@@ -12152,109 +12006,6 @@ async function checkVideoThumbnail(videoKey, mediaData, mediaType) {
   }
 }
 
-// need that for the HEAD/GET check for dead or private YT videos failing at times ### refactor this and checkthumb in sw.js to a more reliable solution
-async function resetAllVideoStatuses() {
-  showNotification("Checking all video thumbnails in database...", true);
-
-  let fixedCount = 0;
-  let checkedCount = 0;
-
-  try {
-    // Process movie details
-    const movieTransaction = db.transaction(['movie_details'], "readwrite");
-    const movieStore = movieTransaction.objectStore('movie_details');
-
-    await new Promise((resolve, reject) => {
-      const request = movieStore.openCursor();
-
-      request.onsuccess = async (event) => {
-        const cursor = event.target.result;
-        if (cursor) {
-          const record = cursor.value;
-
-          if (record?.videos?.results) {
-            let updated = false;
-            checkedCount += record.videos.results.length;
-
-            for (const video of record.videos.results) {
-              if (video.site === "YouTube" && video.status === 404) {
-                console.log(`Resetting status for video ${video.key} in movie ID ${record.id}`);
-                video.status = null;
-                updated = true;
-                fixedCount++;
-              }
-            }
-
-            if (updated) {
-              cursor.update(record);
-            }
-          }
-
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-
-      request.onerror = (event) => {
-        console.error("Error accessing movie_details store:", event.target.error);
-        reject(event.target.error);
-      };
-    });
-
-    // Process series details
-    const seriesTransaction = db.transaction(['series_details'], "readwrite");
-    const seriesStore = seriesTransaction.objectStore('series_details');
-
-    await new Promise((resolve, reject) => {
-      const request = seriesStore.openCursor();
-
-      request.onsuccess = async (event) => {
-        const cursor = event.target.result;
-        if (cursor) {
-          const record = cursor.value;
-
-          if (record?.videos?.results) {
-            let updated = false;
-            checkedCount += record.videos.results.length;
-
-            for (const video of record.videos.results) {
-              if (video.site === "YouTube" && video.status === 404) {
-                console.log(`Resetting status for video ${video.key} in TV series ID ${record.id}`);
-                video.status = null;
-                updated = true;
-                fixedCount++;
-              }
-            }
-
-            if (updated) {
-              cursor.update(record);
-            }
-          }
-
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-
-      request.onerror = (event) => {
-        console.error("Error accessing series_details store:", event.target.error);
-        reject(event.target.error);
-      };
-    });
-
-    // Clear the video status cache
-    videoStatusCache.clear();
-
-    console.log(`Video status reset complete. Checked ${checkedCount} videos, reset ${fixedCount} statuses.`);
-    showNotification(`Reset ${fixedCount} video statuses across all database records.`, false);
-  } catch (error) {
-    console.error("Error in resetAllVideoStatuses:", error);
-    showNotification("Error resetting video statuses. Check console for details.", false);
-  }
-}
-
 /**
  * Initializes UI and functionality based on loaded user settings
  */
@@ -12297,7 +12048,7 @@ function updateUserIconDisplay() {
  * @returns {Promise<Object>} User settings object
  */
 async function getUserSettingsFromDB(username = null) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (!db) {
       console.error("Database not available");
       return resolve(null);
@@ -12966,7 +12717,7 @@ function handleLogoClick(event) {
   }
 }
 
-function handleSettingsClick(_event, _element) {
+function handleSettingsClick() {
   try {
     showSettingsPopup();
   } catch (error) {
@@ -12975,7 +12726,7 @@ function handleSettingsClick(_event, _element) {
   }
 }
 
-function handleAboutClick(_event, _element) {
+function handleAboutClick() {
   try {
     showAboutPopup();
   } catch (error) {
@@ -12984,7 +12735,7 @@ function handleAboutClick(_event, _element) {
   }
 }
 
-function handleBackupClick(_event, _element) {
+function handleBackupClick() {
   try {
     backupDatabase(db);
   } catch (error) {
@@ -13283,7 +13034,7 @@ function toggleYearSort() {
   }
 
   // Reset pagination variables without clearing the grid
-  currentPage = 0;
+  //currentPage = 0;
   startIndex = 0;
   endIndex = 0;
   renderedMediaIDs.clear();
@@ -14125,29 +13876,11 @@ function updateGridSizeLayout() {
 
   // Update all existing images to the new size
   if (filteredRecords && filteredRecords.length > 0 && !isJumping && !jumpLock) {
-    // Get current scroll position for visibility detection
-    const scrollTop = window.scrollY || window.pageYOffset;
-    const viewportHeight = window.innerHeight;
-    const viewportBottom = scrollTop + viewportHeight;
-
-    // Approximate cards per row based on viewport width and card size
-    const cardsPerRow = Math.floor((window.innerWidth - 60) / (size + 10)); // 10px for gap
 
     // Update image sizes for all cards, with priority for visible ones
     cardGrid.querySelectorAll('.media-card').forEach(mediaCard => {
       const img = mediaCard.querySelector('img');
       if (!img || !img.dataset.originalUrl) return;
-
-      // Get card position to determine visibility
-      const rect = mediaCard.getBoundingClientRect();
-      const cardTop = rect.top + scrollTop;
-      const cardBottom = rect.bottom + scrollTop;
-
-      // Check if card is visible or near viewport (with 50% buffer)
-      const isVisible = (
-        (cardTop >= scrollTop - (viewportHeight * 0.5) && cardTop <= viewportBottom + (viewportHeight * 0.5)) ||
-        (cardBottom >= scrollTop - (viewportHeight * 0.5) && cardBottom <= viewportBottom + (viewportHeight * 0.5))
-      );
 
       const originalUrl = img.dataset.originalUrl;
       const defaultUrl = img.dataset.defaultUrl || null;
@@ -14671,14 +14404,8 @@ function closePopup(type, options = {}) {
       });
       break;
 
-    case 'settings':
+    case 'settings': {
       commonCleanup();
-
-      // Cleanup event listeners
-      const formElements = popup.querySelectorAll('input, select');
-      formElements.forEach(element => {
-        element.removeEventListener('change', autoSave);
-      });
 
       // Check if JustWatch settings changed - with safe handling of undefined values
       const initialJWConfig = options.initialJWConfig || {};
@@ -14724,8 +14451,8 @@ function closePopup(type, options = {}) {
         initTooltips();
       }
       break;
-
-    case 'video':
+    }
+    case 'video': {
       const videoModal = document.getElementById("videoModal");
       const videoFrame = document.getElementById("videoFrame");
       const fromDetailView = options.fromDetailView || false;
@@ -14753,8 +14480,8 @@ function closePopup(type, options = {}) {
         if (popup) popup.classList.remove("hidden");
       }
       break;
-
-    case 'image':
+    }
+    case 'image': {
       const modal = document.getElementById("imageModal");
       if (modal) {
         modal.classList.add("hidden");
@@ -14779,7 +14506,7 @@ function closePopup(type, options = {}) {
         modal.classList.remove("hide-cursor");
       }
       break;
-
+    }
     default:
       // Generic popup closing
       commonCleanup();
@@ -14873,7 +14600,7 @@ function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => resolve(e.target.result);
-    reader.onerror = (e) => reject(new Error('Error reading file'));
+    reader.onerror = () => reject(new Error('Error reading file'));
     reader.readAsText(file);
   });
 }
@@ -14985,7 +14712,7 @@ function processJSONFile(content) {
       extractIDs(data);
       return ids;
     }
-  } catch (error) {
+  } catch {
     throw new Error('Invalid JSON format');
   }
 }
@@ -15751,7 +15478,7 @@ async function loadCoreAppData(dbConn) {
 
     // Promise 2: Get settings for hinted user (or resolve null)
     if (currentUsername) {
-      promises.push(new Promise((resolve, reject) => {
+      promises.push(new Promise((resolve) => {
         const req = store.get(currentUsername);
         req.onsuccess = event => resolve(event.target.result || null);
         req.onerror = event => {
@@ -15962,161 +15689,6 @@ async function setupUserCoreLists(newUsername) {
   } catch (error) {
     console.error("Failed to set up core lists for new user:", error);
     throw error;
-  }
-}
-
-// --- Interaction with media_settings store ---
-
-/**
- * Gets a specific media setting (e.g., poster, backdrop) for a user and IMDb ID.
- * @param {string} imdbID
- * @param {'poster' | 'backdrop'} type - The type of setting.
- * @returns {Promise<string | null>} - The value (URL) or null if not set.
- */
-async function getMediaSetting(imdbID, type) {
-  if (!db) throw new Error("Database not open");
-  if (!userSettings.username ) throw new Error("Username not set");
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(["media_settings"], "readonly");
-    const store = transaction.objectStore("media_settings");
-    // Use the index for efficient lookup
-    const index = store.index("user_media_type");
-    const key = [userSettings.username , imdbID, type];
-    const request = index.get(key);
-
-    request.onsuccess = (event) => {
-      const result = event.target.result;
-      resolve(result ? result.value : null); // Return the 'value' field (URL)
-    };
-    request.onerror = (event) => {
-      reject(`Error fetching media setting (${type}) for ${imdbID}: ${event.target.error}`);
-    };
-  });
-}
-
-/**
- * Sets or updates a specific media setting.
- * @param {string} imdbID
- * @param {'poster' | 'backdrop'} type
- * @param {string} value - The URL/path to store.
- * @returns {Promise<void>}
- */
-async function setMediaSetting(imdbID, type, value) {
-  if (!db) throw new Error("Database not open");
-  if (!userSettings.username ) throw new Error("Username not set");
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(["media_settings"], "readwrite");
-    const store = transaction.objectStore("media_settings");
-    const index = store.index("user_media_type");
-    const key = [userSettings.username , imdbID, type];
-
-    // Check if it already exists to update timestamp, otherwise create new
-    const getRequest = index.get(key);
-
-    getRequest.onsuccess = (event) => {
-      let record = event.target.result;
-      const now = Date.now();
-
-      if (record) {
-        // Update existing record
-        record.value = value;
-        record.timestamp = now;
-        record.source = 'user'; // Mark as user-set
-      } else {
-        // Create new record
-        record = {
-          username: userSettings.username ,
-          imdbID: imdbID,
-          type: type,
-          value: value,
-          source: 'user',
-          timestamp: now
-          // id will be auto-generated
-        };
-      }
-
-      const putRequest = store.put(record);
-      putRequest.onsuccess = () => {
-        console.log(`Media setting (${type}) for ${imdbID} saved.`);
-        resolve();
-      };
-      putRequest.onerror = (event) => {
-        reject(`Error saving media setting (${type}) for ${imdbID}: ${event.target.error}`);
-      };
-    };
-    getRequest.onerror = (event) => {
-      reject(`Error checking existing media setting (${type}) for ${imdbID}: ${event.target.error}`);
-    };
-  });
-}
-
-/**
- * Deletes a specific media setting.
- * @param {string} imdbID
- * @param {'poster' | 'backdrop'} type
- * @returns {Promise<void>}
- */
-async function deleteMediaSetting(imdbID, type) {
-  if (!db) throw new Error("Database not open");
-  if (!userSettings.username ) throw new Error("Username not set");
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(["media_settings"], "readwrite");
-    const store = transaction.objectStore("media_settings");
-    const index = store.index("user_media_type");
-    const key = [userSettings.username , imdbID, type];
-
-    // Find the primary key (id) using the index first
-    const getRequest = index.getKey(key); // Get only the primary key
-
-    getRequest.onsuccess = (event) => {
-      const primaryKey = event.target.result;
-      if (primaryKey) {
-        const deleteRequest = store.delete(primaryKey);
-        deleteRequest.onsuccess = () => {
-          console.log(`Media setting (${type}) for ${imdbID} deleted.`);
-          resolve();
-        };
-        deleteRequest.onerror = (event) => {
-          reject(`Error deleting media setting (${type}) for ${imdbID}: ${event.target.error}`);
-        };
-      } else {
-        console.log(`Media setting (${type}) for ${imdbID} not found to delete.`);
-        resolve(); // Resolve successfully if not found
-      }
-    };
-    getRequest.onerror = (event) => {
-      reject(`Error finding media setting key (${type}) for ${imdbID}: ${event.target.error}`);
-    };
-  });
-}
-
-// Handle URL links in the tooltip
-function handleLinkClick(event, _element) {
-  // Allow the default link behavior
-  event.stopPropagation(); // Prevent bubbling to media-card
-}
-
-// Handle video modal links (like the trailer)
-function handleVideoModal(event, element) {
-  event.stopPropagation(); // Prevent bubbling to media-card
-  
-  // Check if this is a video modal trigger
-  if (element.hasAttribute('onclick')) {
-    // Extract the video ID from the onclick attribute
-    const onclickAttr = element.getAttribute('onclick');
-    const match = onclickAttr.match(/openVideoModal\('([^']+)'\)/);
-    
-    if (match && match[1]) {
-      const videoId = match[1];
-      // Call the openVideoModal function directly instead of using onclick
-      openVideoModal(videoId);
-      
-      // Remove the onclick attribute since we're handling it here
-      element.removeAttribute('onclick');
-    }
   }
 }
 
@@ -16497,9 +16069,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Check if Backup Schedule is due
   await runScheduledBackup(db, userSettings);
-  
-  // ### find a better way to check for dead and private YT links, uncomment below if 404s were assigned by mistake
-  // resetAllVideoStatuses();
 
   // Map of click handlers for different elements
   const clickHandlers = {
@@ -16521,15 +16090,22 @@ document.addEventListener("DOMContentLoaded", async () => {
         await toggleListMembership(imdbID, listId, userSettings.username);
         element.classList.toggle('active');
         refreshCustomListsInTooltips(imdbID);
-      } catch (err) {
+      } catch {
         showNotification('Failed to update list membership.', false);
       }
     },
 
     // Play button and URL links - these need to come BEFORE media-card
-    '.play-link': handleLinkClick,
-    '.url-line a.full-link': handleLinkClick,
-    '.url-line .full-link': handleVideoModal,
+    '.play-link, .url-line a.full-link, .justwatch-link': (event) => {
+      event.stopPropagation(); // Always prevent bubbling to .media-card
+    },
+    '[data-video-key]': (_event, element) => {
+      const videoKey = element.getAttribute('data-video-key');
+      if (videoKey) {
+        // Optionally check for a flag or type if you need to distinguish
+        openVideoModal(videoKey, element.classList.contains('card'));
+      }
+    },
 
     '.media-card': handleMediaCardClick,
 
@@ -16551,7 +16127,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     '#favourites-filter-icon': toggleListFilter,
     '#watchlist-filter-icon': toggleListFilter,
     '#collection-filter-icon': toggleListFilter,
-    '#customlist-filter-icon': (event, _element) => {
+    '#customlist-filter-icon': (event) => {
       event.stopPropagation();
       const panel = document.getElementById('customlist-dropdown-panel');
       const icon = document.getElementById('customlist-filter-icon');
@@ -16587,6 +16163,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     '#prev-backdrop': handlePrevBackdrop,
     '#next-backdrop': handleNextBackdrop,
     '#toggle-active-poster': handlePosterToggle,
+    '.card.backdrop': (_event, element) => {
+      const filePath = element.getAttribute('data-file-path');
+      const imdbID = element.getAttribute('data-imdbid');
+      openImageModal(filePath, imdbID, 'backdrop');
+    },
+    '.card.poster': (_event, element) => {
+      const filePath = element.getAttribute('data-file-path');
+      const imdbID = element.getAttribute('data-imdbid');
+      openImageModal(filePath, imdbID, 'poster');
+    },
 
     // Generic close button handler
     '.close-modal': (event, element) => {
@@ -16765,16 +16351,21 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       if (popup && !popup.classList.contains("hidden")) {
-        // Determine popup type
-        if (popup.classList.contains("detail-view")) {
-          closePopup('detail');
-        } else if (document.querySelector(".settings-container")) {
-          closePopup('settings', { initialJWConfig });
-        } else if (isNotesPopupActive) {
-          closePopup('note');
+        // Try to get popup type from the popup itself or a close button inside it
+        let popupType = popup.getAttribute('data-popup-type') ||
+          popup.querySelector('[data-popup-type]')?.getAttribute('data-popup-type');
+
+        if (popupType) {
+          if (popupType === 'settings') {
+            closePopup('settings', { initialJWConfig });
+          } else {
+            closePopup(popupType);
+          }
         } else {
+          // Fallback if no data-popup-type found
           closePopup('about');
         }
+
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -16814,8 +16405,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (detailView) {
         imdbID = detailView.dataset.imdbid;
-        // Pass true to indicate we're in detail view
-        const isInDetailView = true;
       } else {
         // Otherwise check for hovered card
         const hoveredCard = document.querySelector('.media-card:hover');

@@ -2423,6 +2423,7 @@ background: linear-gradient(to right,
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  pointer-events: auto;
 }
 
 /* Top Row */

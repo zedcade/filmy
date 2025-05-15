@@ -1,4 +1,5 @@
-.vscode/launch.json
+.vscode/
+node_modules/
 css/.DS_Store
 img/.DS_Store
 js/.DS_Store
