@@ -226,7 +226,6 @@ let defaultStartYear = null;
 let defaultEndYear = null;
 let yearRangeMin, yearRangeMax, startYearLabel, endYearLabel;
 let yearSliderTrack, minYear, maxYear;
-let yearSortActive = false;
 let yearSortAscending = true;
 let activeMinImdb = null;
 let activeMaxImdb = null;
@@ -400,10 +399,7 @@ const weightedRating = {
 };
 
 /** DeBOUNCERS & THROTTLERS */
-const debouncedApplyRatingFilters = debounce(() => applyFiltersAndSearch(), 50);
-const debouncedApplyGenreFilters = debounce(applyFiltersAndSearch, 50);
-const debouncedResetYearFilters = debounce(resetYearFilters, 70);
-const debouncedApplyYearFilters = debounce((triggeredBy) => { applyFiltersAndSearch(triggeredBy); }, 70);
+const debouncedApplyFilters = debounce(() => applyFiltersAndSearch(true, null, true), 70);
 const throttledUpdateGridSizeLayout = throttle(updateGridSizeLayout, 16); // 16 = ~60fps
 const throttledJumpToLetter = throttle(jumpToLetter, 400); // 400ms limit between jumps
 
@@ -4077,7 +4073,7 @@ async function processMediaInChunks(allMedia, linksMap, listsMap, detailsMap) {
   return mergedMedia;
 }
 
-async function applyFiltersAndSearch(triggeredBy = null, shouldSort = true, preFilteredResults = null, shouldResetGrid = true) {
+async function applyFiltersAndSearch(shouldSort = true, preFilteredResults = null, shouldResetGrid = true) {
   // Start with the prefiltered results if provided; otherwise, use all movies from mediaCache
   let filtered = preFilteredResults ? preFilteredResults : Array.from(mediaCache.values());
 
@@ -4205,41 +4201,25 @@ async function applyFiltersAndSearch(triggeredBy = null, shouldSort = true, preF
       return year >= activeStartYear && year <= activeEndYear;
     });
 
-    // Update year filter button appearance
+    // Update year filter button appearance to show filter is active
     const yearFilterButton = document.getElementById('year-filter-button');
-    yearFilterButton.classList.add('sort-active');
-
-    // Always set yearSortActive to true when year filter is active
-    yearSortActive = true;
     
-    // Apply year-specific sorting based on which slider triggered the change
-    if (triggeredBy === "min") {
-      yearSortAscending = true;
-      yearFilterButton.classList.remove('sort-desc');
-      yearFilterButton.classList.add('sort-asc');
-      currentSortField = "year"; // Set the current sort field to year
-    } else if (triggeredBy === "max") {
-      yearSortAscending = false;
-      yearFilterButton.classList.remove('sort-asc');
-      yearFilterButton.classList.add('sort-desc');
-      currentSortField = "year"; // Set the current sort field to year
+    // Only update the filter active state, not sort indicators
+    if (!yearFilterButton.classList.contains('sort-asc') && !yearFilterButton.classList.contains('sort-desc')) {
+      yearFilterButton.classList.add('sort-active');
     }
   } else {
-    // Remove active state when year filter is not active
-    document.getElementById('year-filter-button').classList.remove('sort-active', 'sort-asc', 'sort-desc');
-    
-    // If year sliders were reset to defaults, apply default A-Z sorting
-    if (triggeredBy === "min" || triggeredBy === "max") {
-      currentSortField = "title";
-      yearSortActive = false; 
-      yearSortAscending = true;
+    // If year filter is not active, remove the active state but preserve sort indicators
+    const yearFilterButton = document.getElementById('year-filter-button');
+    if (!yearFilterButton.classList.contains('sort-asc') && !yearFilterButton.classList.contains('sort-desc')) {
+      yearFilterButton.classList.remove('sort-active');
     }
   }
  
   // Apply sorting based on current state
   if (shouldSort) {
-    if (currentSortField === "year" || yearSortActive) {
-      // Apply year sorting with the current direction
+    if (currentSortField === "year") {
+      // Only sort by year if explicitly selected via year sort button
       filtered = sortRecords(filtered, "year", yearSortAscending);
     } else if (currentSortField && currentSortField !== "title") {
       // Apply rating sort if active
@@ -4552,7 +4532,6 @@ function updateYearSliderTrack(rangeStart, rangeEnd, track, min, max) {
  * Update slider values and apply filters.
  */
 function updateYearSliderValues(triggeredBy) {
-
   if (!yearRangeMin || !yearRangeMax) return;
 
   let startValue = parseInt(yearRangeMin.value, 10);
@@ -4582,13 +4561,11 @@ function updateYearSliderValues(triggeredBy) {
   // Update custom track colors dynamically
   updateYearSliderTrack(yearRangeMin, yearRangeMax, yearSliderTrack, minYear, maxYear);
 
-  // Indicate sort order by changing thumb color
+  // Update thumb appearance but don't change sort
   if (startValue === minYear && endValue === maxYear) {
     // Reset thumb colors if sliders are at default positions
     yearRangeMin.classList.remove("active");
     yearRangeMax.classList.remove("active");
-    yearSortActive = false;
-    yearSortAscending = true;
   } else if (triggeredBy === "min") {
     yearRangeMin.classList.add("active"); // Highlight min slider thumb
     yearRangeMax.classList.remove("active"); // Reset max slider thumb
@@ -4597,64 +4574,10 @@ function updateYearSliderValues(triggeredBy) {
     yearRangeMin.classList.remove("active"); // Reset min slider thumb
   }
 
-  // Apply filtering with debounce
-  debouncedApplyYearFilters(triggeredBy);
+  // Apply filtering with debounce - don't pass triggeredBy to avoid sort changes
+  debouncedApplyFilters();
 
   // Update button state dynamically
-  updateFilterButtonState(document.getElementById("year-filter-button"));
-}
-
-function resetYearFilters() {
-  if (!yearRangeMin || !yearRangeMax) return;
-
-  minYear = defaultStartYear;
-  maxYear = defaultEndYear;
-  currentSortField = "year";
-
-  if (activeStartYear === minYear && activeEndYear === maxYear) {
-    console.log("No year filters to reset");
-    return;
-  }
-
-  // Reset global variables to defaults
-  activeStartYear = minYear;
-  activeEndYear = maxYear;
-
-  // Reset slider UI elements
-  yearRangeMin.value = minYear;
-  yearRangeMax.value = maxYear;
-
-  // Force browser to update slider position visually
-  yearRangeMin.dispatchEvent(new Event('input', { bubbles: true }));
-  yearRangeMax.dispatchEvent(new Event('input', { bubbles: true }));
-
-  // Reset labels
-  startYearLabel.textContent = minYear;
-  endYearLabel.textContent = maxYear;
-
-  // Reset slider track
-  updateYearSliderTrack(yearRangeMin, yearRangeMax, yearSliderTrack, minYear, maxYear);
-
-  // Reset any active year sort
-  const yearFilterButton = document.getElementById('year-filter-button');
-  yearFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
-
-  // Reset all year sort state variables
-  yearSortActive = false;  // Reset the new sort state variable
-  yearSortAscending = true;  // Reset to default
-
-  // Clear filteredRecords cache
-  filteredRecords = [];
-
-  // Apply filters and update the grid
-  currentSortField = "title";
-  applyFiltersAndSearch(null, true);
-
-  // Reset thumb colors
-  yearRangeMin.classList.remove("active");
-  yearRangeMax.classList.remove("active");
-
-  // Update button state
   updateFilterButtonState(document.getElementById("year-filter-button"));
 }
 
@@ -4760,7 +4683,7 @@ function resetGenreFilters() {
   }
 
   //applyFiltersAndSearch();
-  debouncedApplyGenreFilters();
+  debouncedApplyFilters();
   updateFilterButtonState(document.getElementById("genre-filter-button"));
 }
 
@@ -5039,7 +4962,7 @@ function initializeRatingsFilter() {
         min,
         max
       );
-      debouncedApplyRatingFilters();
+      debouncedApplyFilters();
     };
 
     // Add event listeners for both sliders
@@ -5288,7 +5211,7 @@ async function searchAllStores(query, signal) {
 
     // Initial combined results
     const initialResults = [...movieResults, ...seriesResults];
-    applyFiltersAndSearch(null, false, initialResults, true);
+    applyFiltersAndSearch(false, initialResults, true);
     updateMatchCount();
 
     if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
@@ -5333,7 +5256,7 @@ async function searchAllStores(query, signal) {
     // Final combined results
     const allResults = [...initialResults, ...peopleResults, ...keywordResults];
     if (peopleResults.length > 0 || keywordResults.length > 0) {
-      applyFiltersAndSearch(null, false, allResults, false);
+      applyFiltersAndSearch(false, allResults, false);
       updateMatchCount();
     }
 
@@ -12569,7 +12492,7 @@ function handleMediaTypeSelection(value) {
   }
 
   if (activeMediaType !== null || (activeMediaType === null && previousMediaType !== null)) {
-    applyFiltersAndSearch(null, true, null);
+    applyFiltersAndSearch(true, null);
     previousMediaType = activeMediaType;
   }
 
@@ -12994,18 +12917,36 @@ function cycleWatchedFilter(_event, element) {
 // Year sort toggle function
 function toggleYearSort() {
   const yearFilterButton = document.getElementById('year-filter-button');
+  const ratingsFilterButton = document.getElementById('ratings-filter-button');
 
-  if (!yearFilterButton.classList.contains('sort-active')) {
+  // Reset rating sort state 
+  ratingsFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
+  document.querySelectorAll('.rating-filter, .rating-filter-icon').forEach(element => {
+    element.classList.remove('sort-asc', 'sort-desc');
+  });
+  
+  // Reset the current sort field if it was a rating type
+  if (currentSortField === 'imdb' || currentSortField === 'tmdb' || 
+      currentSortField === 'metascore' || currentSortField === 'rt' || 
+      currentSortField === 'weighted') {
+    currentSortField = "year"; // We're now sorting by year
+  }
+
+  if (!yearFilterButton.classList.contains('sort-asc') && !yearFilterButton.classList.contains('sort-desc')) {
     // Not sorted by year yet - switch to ascending
     filteredRecords = sortRecords(filteredRecords, "year", true);
     yearFilterButton.classList.add('sort-active', 'sort-asc');
     yearFilterButton.classList.remove('sort-desc');
+    currentSortField = "year";
+    yearSortAscending = true;
     showNotification('Sorting by year (ascending)', false);
   } else if (yearFilterButton.classList.contains('sort-asc')) {
     // Already sorted ascending - switch to descending
     filteredRecords = sortRecords(filteredRecords, "year", false);
     yearFilterButton.classList.add('sort-active', 'sort-desc');
     yearFilterButton.classList.remove('sort-asc');
+    currentSortField = "year";
+    yearSortAscending = false;
     showNotification('Sorting by year (descending)', false);
   } else {
     // Already sorted descending - switch to A-Z
@@ -13016,7 +12957,6 @@ function toggleYearSort() {
   }
 
   // Reset pagination variables without clearing the grid
-  //currentPage = 0;
   startIndex = 0;
   endIndex = 0;
   renderedMediaIDs.clear();
@@ -13025,22 +12965,9 @@ function toggleYearSort() {
 }
 
 function handleYearFilterButtonClick() {
-  // Check if year range is active
-  const yearRangeActive =
-    activeStartYear !== null &&
-    activeEndYear !== null &&
-    (activeStartYear !== defaultStartYear || activeEndYear !== defaultEndYear);
 
-  // console.log("Year button clicked. Range active:", yearRangeActive);
-
-  if (yearRangeActive) {
-    // Reset the sliders to default values
-    // resetYearFilters();
-    debouncedResetYearFilters();
-  } else {
-    // Toggle sort order
     toggleYearSort();
-  }
+  
 }
 
 function setupPanelHoverHandlers() {
@@ -13191,7 +13118,7 @@ function setupSearchInputHandlers() {
     // Handle empty query immediately without debounce
     if (!query) {
       activeSearchQuery = null;
-      applyFiltersAndSearch(null, true, null);
+      applyFiltersAndSearch(true, null);
       updateMatchCount();
       removeNotification(note => note.isProgress && !note.isBackgroundTask);
       return;
@@ -13218,7 +13145,7 @@ function setupSearchInputHandlers() {
         console.log(`Found ${results.length} results for "${query}" in category "${selectedCategory}".`);
 
         await yieldToUI();
-        applyFiltersAndSearch(null, true, results);
+        applyFiltersAndSearch(true, results);
         updateMatchCount();
 
       } catch (error) {
@@ -14146,6 +14073,10 @@ function handleEpisodeCardClick(_event, card) {
 
 function toggleWeightedRatingSort() {
   const ratingsFilterButton = document.getElementById('ratings-filter-button');
+  const yearFilterButton = document.getElementById('year-filter-button');
+
+  // Reset year sort state
+  yearFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
 
   // Check if any individual rating sort is active
   const hasActiveRatingSort = currentSortField === 'imdb' ||
@@ -14194,13 +14125,17 @@ function toggleWeightedRatingSort() {
   }
 
   // Apply the sort
-  applyFiltersAndSearch(null, true);
+  applyFiltersAndSearch(true);
 }
 
 // toggle rating sort - maybe reset thumbs too ### 
 function toggleRatingSort(ratingType) {
   const ratingsFilterButton = document.getElementById('ratings-filter-button');
+  const yearFilterButton = document.getElementById('year-filter-button');
 
+  // Reset year sort state
+  yearFilterButton.classList.remove('sort-active', 'sort-asc', 'sort-desc');
+  
   // Check if the ratings filter button was clicked
   if (ratingType === 'ratings-filter') {
     // Call the weighted rating sort function
@@ -14224,7 +14159,7 @@ function toggleRatingSort(ratingType) {
         showNotification(`Sorting by ${ratingType.toUpperCase()} rating (ascending)`, false);
       } else {
         currentSortField = null;
-        currentSortOrder = 'desc'; // Reset to default ### reset thumbs?
+        currentSortOrder = 'desc'; // Reset to default
         showNotification('Sorting by title (A-Z)', false);
       }
     } else {
@@ -14240,7 +14175,7 @@ function toggleRatingSort(ratingType) {
   }
 
   // Apply the sort
-  applyFiltersAndSearch(null, true);
+  applyFiltersAndSearch(true);
 }
 
 function getRatingIconIndex(ratingType) {
@@ -15005,9 +14940,7 @@ async function batchAddTitles(imdbIDs, listName) {
   initializeYearSlider();
   updateMatchCount();
 
-  if (typeof applyFiltersAndSearch === 'function') {
-    applyFiltersAndSearch(null, true);
-  }
+  applyFiltersAndSearch(true);
 }
 
 /**
