@@ -280,6 +280,7 @@ const tmdbThrottleInterval = 1000; // 1 second
 const omdbApiBaseUrl = "https://www.omdbapi.com/";
 const tmdbApiBaseUrl = "https://api.themoviedb.org/3/";
 const tmdbImgBaseUrl = "https://image.tmdb.org/t/p/";
+const tmdbBaseUrl = "https://www.themoviedb.org/"
 
 /* Context map for TMDB endpoints to transform and store in indexedDB */
 const endpointContextMap = {
@@ -1265,18 +1266,18 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
       }
     }
 
-    return true; // Return true to indicate success
+    return mergedRecord.imdbID;
 
   } catch (error) {
     // If this is part of a batch process, log the error but don't throw
     if (isBatchProcess) {
       console.error(`Error processing ${imdb_ID}:`, error);
-      return false; // Return false to indicate failure
+      return null; // Return false to indicate failure
     } else {
       // Standard error handling for interactive use
       console.error("Error adding title:", error);
       showNotification(`❌ Error processing ${mediaType === "tv" ? "series" : "movie"}: ${error.message}`, false);
-      return false;
+      return null;
     }
   }
 }
@@ -5209,8 +5210,28 @@ async function searchAllStores(query, signal) {
       signal
     );
 
-    // Initial combined results
-    const initialResults = [...movieResults, ...seriesResults];
+    // Deduplicate and combine movie and series results
+    const seenIds = new Set();
+    const initialResults = [];
+    
+    // Add unique movie results
+    for (const movie of movieResults) {
+      const id = movie.imdbID || movie.id;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        initialResults.push(movie);
+      }
+    }
+    
+    // Add unique series results
+    for (const series of seriesResults) {
+      const id = series.imdbID || series.id;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        initialResults.push(series);
+      }
+    }
+
     applyFiltersAndSearch(false, initialResults, true);
     updateMatchCount();
 
@@ -5253,8 +5274,27 @@ async function searchAllStores(query, signal) {
       signal
     );
 
-    // Final combined results
-    const allResults = [...initialResults, ...peopleResults, ...keywordResults];
+    // Add unique people and keyword results
+    const allResults = [...initialResults];
+    
+    // Add unique people results
+    for (const person of peopleResults) {
+      const id = person.imdbID || person.id;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        allResults.push(person);
+      }
+    }
+    
+    // Add unique keyword results
+    for (const keyword of keywordResults) {
+      const id = keyword.imdbID || keyword.id;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        allResults.push(keyword);
+      }
+    }
+
     if (peopleResults.length > 0 || keywordResults.length > 0) {
       applyFiltersAndSearch(false, allResults, false);
       updateMatchCount();
@@ -5765,9 +5805,9 @@ function generateRatingsHtml(mediaData) {
   let tmdbRatingLink = "";
   if (mediaData.tmdbID && mediaData.vote_average) {
     const tmdbVotes = parseFloat(mediaData.vote_average).toFixed(1);
-    tmdbRatingLink = `<a href="https://www.themoviedb.org/${mediaData.mediaType}/${mediaData.tmdbID}" target="_blank" class="rating-link"><span class="tmdb-rating">${tmdbVotes}</span><span class="tmdb-votes">${formattedVoteCount}</span><span class="ttip-txt" data-tt-pos="bottom">🔗 TMDB</span></a>`;
+    tmdbRatingLink = `<a href="${tmdbBaseUrl}${mediaData.mediaType}/${mediaData.tmdbID}" target="_blank" class="rating-link"><span class="tmdb-rating">${tmdbVotes}</span><span class="tmdb-votes">${formattedVoteCount}</span><span class="ttip-txt" data-tt-pos="bottom">🔗 TMDB</span></a>`;
   } else {
-    tmdbRatingLink = `<a href="https://www.themoviedb.org/${mediaData.mediaType}/${mediaData.tmdbID}" target="_blank" class="rating-link"><span class="tmdb-rating">NR</span><span class="tmdb-votes">–</span><span class="ttip-txt" data-tt-pos="bottom">🔗 TMDB</span></a>`;
+    tmdbRatingLink = `<a href="${tmdbBaseUrl}${mediaData.mediaType}/${mediaData.tmdbID}" target="_blank" class="rating-link"><span class="tmdb-rating">NR</span><span class="tmdb-votes">–</span><span class="ttip-txt" data-tt-pos="bottom">🔗 TMDB</span></a>`;
   }
 
   const metacriticUrlExceptions = {
@@ -5975,7 +6015,7 @@ function generateTooltip(mediaData) {
   const boxOffice = mediaData.BoxOffice && mediaData.BoxOffice !== "N/A" ? `<span><strong>Box Office:</strong> ${mediaData.BoxOffice}</span>` : "";
 
   // Construct the TMDB JustWatch URL using the tmdbID and the global country.
-  const tmdbJustWatchUrl = `https://www.themoviedb.org/${mediaData.mediaType}/${mediaData.tmdbID}/watch?locale=${userSettings.justwatch_country}`;
+  const tmdbJustWatchUrl = `${tmdbBaseUrl}${mediaData.mediaType}/${mediaData.tmdbID}/watch?locale=${userSettings.justwatch_country}`;
 
   const customListsHtml = generateCustomListsHtml(mediaData, customListsMeta);
   
@@ -6058,7 +6098,7 @@ function generateTooltip(mediaData) {
       `;
 
   const listButton = `
-            <button id="list-media" class="ttip-button list-media" data-state="inactive" data-tooltip onclick="event.stopPropagation();">
+            <button id="list-media" class="ttip-button list-media" data-state="inactive" data-tooltip>
           <svg class="ttip-btn-icon"><use href="#list_custom"/></svg>
             </button>
       `;
@@ -8074,7 +8114,7 @@ async function showSettingsPopup(onFirstProfileSavedCallback) {
            </div>
         </div>
         <span class="settings-separator" data-tooltip>
-          <span class="separator-text">API Keys<span class="ttip-txt" data-tt-pos="bottom" style="padding:4px 12px;"><p>Visit <a href="https://www.themoviedb.org/settings/api/" target="_blank">TMDB</a> and <a href="https://www.omdbapi.com/apikey.aspx" target="_blank">OMDb</a> to get free API keys.</p><p>Enter your OMDB and TMDB API Keys below.</p></span></span>
+          <span class="separator-text">API Keys<span class="ttip-txt" data-tt-pos="bottom" style="padding:4px 12px;"><p>Visit <a href="${tmdbBaseUrl}settings/api/" target="_blank">TMDB</a> and <a href="https://www.omdbapi.com/apikey.aspx" target="_blank">OMDb</a> to get free API keys.</p><p>Enter your OMDB and TMDB API Keys below.</p></span></span>
         </span>
         <!-- Section 2: API Keys -->
         <div class="settings" style="display: flex; align-items: center; gap: 10px;">
@@ -8406,7 +8446,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
   });
 
   const updateAndSaveSettings = async () => {
-    console.log("updateAndSaveSettings triggered....");
+    // console.log("updateAndSaveSettings triggered....");
 
     // --- Explicitly Get Current Username from UI ---
     const profileSelectElement = document.getElementById('profilename');
@@ -8417,7 +8457,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
       return; // Stop saving if no valid profile is selected
     }
 
-    console.log("Preparing to save settings for user: " + currentProfileUsername);
+    // console.log("Preparing to save settings for user: " + currentProfileUsername);
 
     // --- Read other form values ---
     const selectedProviders = Array.from(
@@ -8446,7 +8486,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     settingsToSave.user_icon = popupElement.querySelector('#user-icon-preview img')?.src || null;
 
     // --- End Prepare Object ---
-    console.log("Settings object prepared for saving:", settingsToSave);
+    // console.log("Settings object prepared for saving:", settingsToSave);
 
     try {
       // --- Call Save Function with the prepared object ---
@@ -8483,7 +8523,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
       // --- Trigger provider refresh if key might have changed ---
       const canPopulateNow = settingsToSave.username && settingsToSave.tmdb_apikey;
       if (canPopulateNow) {
-        console.log("Settings saved, attempting to refresh providers.");
+        console.log("Settings saved.");
         // Use browser locale as fallback
         const countryToUse = settingsToSave.justwatch_country ||
           Intl.DateTimeFormat().resolvedOptions().locale.split("-")[1] ||
@@ -9730,10 +9770,10 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
         
         let url;
         if (basePath === 'network') {
-          url = `https://www.themoviedb.org/network/${itemId}`;
+          url = `${tmdbBaseUrl}network/${itemId}`;
         } else {
           const slug = `${itemId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
-          url = `https://www.themoviedb.org/${basePath}/${slug}/${mediaType}`;
+          url = `${tmdbBaseUrl}${basePath}/${slug}/${mediaType}`;
         }
         
         return `<a href="${url}" class="${cssClass}" target="_blank">${name}</a>`;
@@ -9773,19 +9813,20 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
   } else {
     console.error("Could not create top row icons for movie:", mediaData.imdbID);
   }
-
-  const setIcon = (mediaData.belongs_to_collection && mediaData.belongs_to_collection.id)
-  ? `<span class="set-icon" title="Part of a set" onclick="window.open('https://www.themoviedb.org/collection/${mediaData.belongs_to_collection.id}', '_blank')">${svgSet}
-   </span>`
-  : "";
+    const setIcon = (mediaData.belongs_to_collection && mediaData.belongs_to_collection.id)
+    ? `<span class="set-icon" title="Part of a set"
+      data-tmdb-url="${tmdbBaseUrl}collection/${mediaData.belongs_to_collection.id}">
+  ${svgSet}
+</span>`
+    : "";
 
   const collectionHTML = mediaData.collection && mediaData.collection.length ? `
   <div class="details-row">
     <div class="header">${setIcon}${mediaData.belongs_to_collection.name} (${mediaData.collection.length})</div>
     <div class="card-container media">
       <!-- First card is the collection poster with link -->
-      <div class="card media collection-card" title="${mediaData.belongs_to_collection.name}" 
-           onclick="window.open('https://www.themoviedb.org/collection/${mediaData.belongs_to_collection.id}', '_blank')">
+<div class="card media collection-card" title="${mediaData.belongs_to_collection.name}"
+     data-tmdb-url="${tmdbBaseUrl}collection/${mediaData.belongs_to_collection.id}">
         ${mediaData.belongs_to_collection.poster_path
       ? `<img src="${tmdbImgBaseUrl}w500${mediaData.belongs_to_collection.poster_path}" loading="lazy" alt="${mediaData.belongs_to_collection.name}" class="media-image">`
       : createPlaceholderSVG(185, 278, 'poster')}
@@ -9893,7 +9934,7 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
 
       const imdbLink = personData.imdb_id
         ? `https://www.imdb.com/name/${personData.imdb_id}`
-        : `https://www.themoviedb.org/person/${credit.personID}`;
+        : `${tmdbBaseUrl}person/${credit.personID}`;
 
       // Combine the roles.
       const combinedRoles = credit.jobs.sort((a, b) => a.localeCompare(b)).join(' / ');
@@ -9979,7 +10020,7 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
         : `${svgPlaceholderProfile}`;
       const imdbLink = personData.imdb_id
         ? `https://www.imdb.com/name/${personData.imdb_id}`
-        : `https://www.themoviedb.org/person/${credit.personID}`;
+        : `${tmdbBaseUrl}person/${credit.personID}`;
 
       const character = credit.character || "";
 
@@ -10058,7 +10099,7 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
       
       return `
         <div class="card media" title="Click to open on TMDB"
-             onclick="window.open('https://www.themoviedb.org/${mediaType}/${record.id}', '_blank')">
+            data-tmdb-url="${tmdbBaseUrl}${mediaType}/${record.id}">
          ${posterUrl}
           <div class="card-title">${title}</div>
           <div class="card-year">${year}</div>
@@ -10267,7 +10308,7 @@ const similarHTML = (mediaData.similar &&
        ${keywords
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(keyword => `
-           <a href="https://www.themoviedb.org/keyword/${keyword.id}" 
+           <a href="${tmdbBaseUrl}keyword/${keyword.id}" 
               class="keyword-pill" 
               target="_blank" 
               title="${keyword.name}">
@@ -10342,9 +10383,8 @@ const similarHTML = (mediaData.similar &&
         // Create tooltip text using the department count and total crew.
         const count = departmentCounts[dep] || 0;
         const tooltipText = `<span class="ttip-txt" data-tt-pos="bottom" style="font-size: 1em;">${dep}<br/>(${count}/${totalCrew})</span>`;
-        return `<a href="javascript:void(0)" class="dept-quicklink" data-tooltip onclick="document.getElementById('${normId}').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });">${dep}${tooltipText}</a>`;
+        return `<a href="javascript:void(0)" class="dept-quicklink" data-target-id="${normId}" data-tooltip>${dep}${tooltipText}</a>`;
       });
-
     return `<div class="crew-quicklinks">${links.join(" ")}</div>`;
   }
 
@@ -16011,9 +16051,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     },
 
     // Play button and URL links - these need to come BEFORE media-card
-    '.play-link, .url-line a.full-link, .justwatch-link': (event) => {
+    '.play-link, .url-line a.full-link, .justwatch-link, .list-media': (event) => {
       event.stopPropagation(); // Always prevent bubbling to .media-card
     },
+
     '[data-video-key]': (_event, element) => {
       const videoKey = element.getAttribute('data-video-key');
       if (videoKey) {
@@ -16060,6 +16101,22 @@ document.addEventListener("DOMContentLoaded", async () => {
         showCustomListPanel('list', lists);
         if (icon) icon.classList.add('active');
       });
+    },
+
+    '[data-tmdb-url]': (event, element) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const url = element.getAttribute('data-tmdb-url');
+      if (url) window.open(url, '_blank');
+    },
+
+    '.dept-quicklink': (event, element) => {
+      event.preventDefault();
+      const targetId = element.getAttribute('data-target-id');
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });
+      }
     },
 
       // Rating sort handlers

@@ -6,3 +6,6 @@ js/.DS_Store
 .DS_Store
 img/filmy-repo1.jpg
 filmy.code-workspace
+package-lock.json
+package.json
+eslint.config.mjs
