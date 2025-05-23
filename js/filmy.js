@@ -2,7 +2,7 @@
  * filmy v1.0 Beta | (c) 2025 Alexander Ipfelkofer | MIT License
  * A Movie & Series Web App
  * Leveraging IndexedDB and LocalStorage
- * filmy provides a seamless experience for cataloging and exploring your personal media collection
+ * filmy provides a seamless experience for cataloguing and exploring your personal media collection
  * 
  * API keys from OMDB and TMDB are required for the script to operate
  * 
@@ -41,7 +41,7 @@ const app_desc = `<strong>A Movie & Series Web App<br/>
 Leveraging IndexedDB and LocalStorage</strong>
 <p>Built with pure JavaScript - no frameworks or external libraries.<br/>
 Developed through AI-assisted coding techniques.</p>
-<p><i>${app_name}</i> provides a seamless experience for cataloging and exploring your personal media collection.</p>`;
+<p><i>${app_name}</i> provides a seamless experience for cataloguing and exploring your personal media collection.</p>`;
 
 const api_notice = `<div class="api-notice">
   <p>This application requires API keys from <a href="https://www.themoviedb.org/settings/api/" target="_blank">TMDB</a> and <a href="https://www.omdbapi.com/apikey.aspx" target="_blank">OMDb</a>.</p>
