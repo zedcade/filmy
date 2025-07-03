@@ -2518,7 +2518,6 @@ background: linear-gradient(to right,
     align-items: stretch;
     flex-wrap: nowrap;
     margin-bottom: 3px;
-    z-index: var(--z-index-tooltip-text);
 }
 
 .ratings-container .ratings {
@@ -2538,6 +2537,7 @@ background: linear-gradient(to right,
     border-radius: 3px;
     cursor: pointer;
     transform: scale(1.08);
+    z-index: var(--z-index-tooltip-text);
 }
 
 .award-icon svg {

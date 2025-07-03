@@ -238,6 +238,7 @@ let activeMaxRT = null;
 let ratingsInitialized = false;
 let currentSortField = null; // 'imdb', 'tmdb', 'metascore', 'rt', or null (default = title)
 let currentSortOrder = 'desc'; // 'desc', 'asc'
+let activeFilter = null;
 
 /* Global Variables for Grid Navigation */
 const DEFAULT_CARD_SIZE = 300; // Default card size (px)
@@ -4216,7 +4217,51 @@ async function applyFiltersAndSearch(shouldSort = true, preFilteredResults = nul
       yearFilterButton.classList.remove('sort-active');
     }
   }
+
  
+// Apply special filters for notes
+if (activeFilter === 'no-notes' || activeFilter === 'has-notes') {
+  // Get all notes for the current user from the cache or database
+  const userNotes = new Set();
+  
+  try {
+    // Query the notes store for all notes by the current user
+    const transaction = db.transaction(["notes"], "readonly");
+    const notesStore = transaction.objectStore("notes");
+    const index = notesStore.index("username_imdbID");
+    
+    // Get all notes for the current user
+    const allUserNotes = await new Promise((resolve, reject) => {
+      const request = index.getAll(IDBKeyRange.bound([userSettings.username], [userSettings.username, '\uffff']));
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+    
+    // Collect all imdbIDs that have notes
+    allUserNotes.forEach(note => {
+      if (note.imdbID) {
+        userNotes.add(note.imdbID);
+      }
+    });
+    
+    // Apply the filter based on the active filter type
+    if (activeFilter === 'no-notes') {
+      // Show only records WITHOUT notes
+      filtered = filtered.filter(media => !userNotes.has(media.imdbID));
+      console.log(`Filtered to ${filtered.length} records without notes`);
+    } else if (activeFilter === 'has-notes') {
+      // Show only records WITH notes
+      filtered = filtered.filter(media => userNotes.has(media.imdbID));
+      console.log(`Filtered to ${filtered.length} records with notes`);
+    }
+    
+  } catch (error) {
+    console.error('Error filtering records by notes:', error);
+    showNotification('Error applying notes filter', false);
+  }
+}
+
+
   // Apply sorting based on current state
   if (shouldSort) {
     if (currentSortField === "year") {
@@ -12195,6 +12240,7 @@ function updateDetailBackdrop(imdbID, overridePath) {
     activeFilePath = media.defaultBackdrop || "";
   }
   popup.style.setProperty("--detail-backdrop", activeFilePath ? `url(${buildTMDbImageUrl(activeFilePath, "backdrop")})` : "none");
+  updateCache(imdbID, db, media.mediaType);
 }
 
 async function initializeApplication() {
@@ -16408,7 +16454,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         break;
       }
-
+      case "m": {
+        // Toggle filter for records with/without notes
+        if (activeFilter === 'no-notes') {
+        // Switch to showing only records WITH notes
+        activeFilter = 'has-notes';
+        showNotification('Showing only records with notes', false);
+        } else if (activeFilter === 'has-notes') {
+        // Clear the filter
+        activeFilter = null;
+        showNotification('Showing all records', false);
+        } else {
+        // Apply the no-notes filter
+        activeFilter = 'no-notes';
+        showNotification('Showing only records without notes', false);
+        }
+        
+        // Apply the filter
+        applyFiltersAndSearch(true, null);
+        break;
+        }
       // Add more key cases as needed
 
       default:
