@@ -1,4 +1,5 @@
 {
+    "version": "1.5",
     "name": "filmy Movie Browser",
     "short_name": "filmy",
     "description": "Browse and manage your movie collection",
