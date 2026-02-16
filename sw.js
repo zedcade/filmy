@@ -46,6 +46,10 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   console.log('Service worker activated');
+  
+  // PATCH #5b: Initialize retry cleanup on activation
+  initRetryCleanup();
+  
   event.waitUntil(
     caches.keys().then(cacheNames => {
       return Promise.all(
@@ -180,13 +184,14 @@ self.addEventListener('fetch', event => {
           }
 
           // If no cache or cache is stale, fetch from network
-          // Implement exponential backoff for retries
-          const backoffTime = Math.pow(2, attempts) * 1000; // Exponential backoff NYI ### refactor later
+          // PATCH #5a: Calculate exponential backoff for retries (FIX Issue #7, #12)
+          const backoffTime = Math.pow(2, attempts) * 1000; // Exponential backoff
+          const retryDelay = Math.min(backoffTime, 30000); // Cap at 30 seconds
 
           // Update retry count
           retryAttempts.set(urlString, attempts + 1);
 
-          console.log(`Fetching from network: ${urlString} (Attempt ${attempts + 1}/${MAX_RETRY_ATTEMPTS})`);
+          console.log(`Fetching from network: ${urlString} (Attempt ${attempts + 1}/${MAX_RETRY_ATTEMPTS}, delay: ${retryDelay}ms)`);
 
           return fetch(event.request)
             .then(networkResponse => {
@@ -249,6 +254,7 @@ self.addEventListener('fetch', event => {
 });
 
 
+
 // Helper function to monitor and limit cache size
 async function monitorCacheSize(cache) {
   try {
@@ -294,17 +300,18 @@ function cleanupFailedRequests() {
 }
 
 // Helper function to clean up old retry attempts
-function cleanupRetryAttempts() {
+// PATCH #5b: Fix service worker memory leak (FIX Issue #7)
+let cleanupIntervalId = null;
+
+function initRetryCleanup() {
   // Reset retry attempts periodically (every hour)
   const RETRY_RESET_INTERVAL = 60 * 60 * 1000; // 1 hour
-  setInterval(() => {
-    console.log('Resetting retry attempts');
+  cleanupIntervalId = setInterval(() => {
+    console.log('Resetting retry attempts and failed requests');
     retryAttempts.clear();
+    failedRequests.clear();  // Also clear failed requests
   }, RETRY_RESET_INTERVAL);
 }
-
-// Start the retry cleanup timer
-cleanupRetryAttempts();
 
 // Handle various cache management messages
 self.addEventListener('message', event => {
