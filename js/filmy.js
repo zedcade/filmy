@@ -16732,6 +16732,7 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
       <style>
         .import-dialog {
           width: min(100%, 760px);
+          min-width: 760px; 
           max-width: 760px;
         }
 
@@ -16979,6 +16980,9 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
             const input = document.createElement('input');
             input.type = 'text';
             input.className = `inline-edit inline-edit-${field}`;
+            const currentWidth = editable.getBoundingClientRect().width;
+            input.style.width = currentWidth + 'px';
+            input.style.boxSizing = 'border-box';
             input.value = currentValue;
             input.dataset.field = field;
             input.dataset.row = rowIndex;
