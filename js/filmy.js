@@ -1,5 +1,5 @@
 /** 
- * filmy v1.0 Beta | (c) 2025 Alexander Ipfelkofer | MIT License
+ * filmy v1.5 Beta | (c) 2025 Alexander Ipfelkofer | MIT License
  * A Movie & Series Web App
  * Leveraging IndexedDB and LocalStorage
  * filmy provides a seamless experience for cataloguing and exploring your personal media collection
@@ -36,7 +36,7 @@
 
 /* GLOBAL VARS */
 const app_name = "filmy";
-const app_version = "1.0 Beta";
+const app_version = "1.5 Beta";
 const app_desc = `<strong>A Movie & Series Web App<br/>
 Leveraging IndexedDB and LocalStorage</strong>
 <p>Built with pure JavaScript - no frameworks or external libraries.<br/>
@@ -53,10 +53,15 @@ const current_features = `<div class="features-section">
 <h3 class="section-heading">Current Features</h3>
 <h4 class="subsection-heading">Keyboard Shortcuts — Grid View</h4>
 <ul class="feature-list">
+  <li><span class="feature-name">[ L ]</span> Add link to media card in focus</li>
+  <li><span class="feature-name">[ M ]</span> Filter for media cards without notes/with notes/all</li>
   <li><span class="feature-name">[ N ]</span> Add a note for media card in focus</li>
   <li><span class="feature-name">[ D ]</span> Open Detail View for media card in focus</li>
   <li><span class="feature-name">[ T ]</span> Play trailer for media card in focus</li>
   <li><span class="feature-name">[ R ]</span> Refresh media card in focus</li>
+  <li><span class="feature-name">[ SHIFT+R ]</span> Force Refresh media card in focus</li>
+  <li><span class="feature-name">[ S ]</span> Search for imdbID in focus (Search link in Settings)</li>
+  <li><span class="feature-name">[ U ]</span> Filter media cards by no links/all</li>
 </ul>
 <h4 class="subsection-heading">Keyboard Shortcuts — Detail View</h4>
 <ul class="feature-list">
@@ -300,1888 +305,6 @@ const AppState = {
   }
 };
 
-/* ============================================
-   DATA VALIDATOR CLASS
-   Validates API responses and sanitizes data
-   ============================================ */
-class DataValidator {
-  /**
-   * Validate TMDB movie/series response
-   * @param {Object} item - TMDB API response
-   * @param {string} mediaType - 'movie' or 'tv'
-   * @returns {Object} { isValid: boolean, errors: string[], sanitized: Object }
-   */
-  static validateTMDBMedia(item, mediaType = 'movie') {
-    const errors = [];
-    const sanitized = { ...item };
-
-    // Required numeric fields
-    const requiredNumericFields = ['id', 'vote_count', 'popularity'];
-    for (const field of requiredNumericFields) {
-      if (typeof sanitized[field] !== 'number') {
-        errors.push(`Missing/invalid field: ${field} (expected number, got ${typeof sanitized[field]})`);
-        sanitized[field] = sanitized[field] || 0;
-      }
-    }
-
-    // Required string fields
-    const requiredStringFields = ['title', 'overview'];
-    if (mediaType === 'tv') {
-      requiredStringFields[0] = 'name';
-    }
-    for (const field of requiredStringFields) {
-      if (typeof sanitized[field] !== 'string') {
-        errors.push(`Missing/invalid field: ${field}`);
-        sanitized[field] = sanitized[field] || '';
-      }
-    }
-
-    // Optional string fields - sanitize nulls
-    ['poster_path', 'backdrop_path', 'original_language'].forEach(field => {
-      if (sanitized[field] === null || sanitized[field] === undefined) {
-        sanitized[field] = '';
-      }
-    });
-
-    // Default numeric fields to 0 if missing
-    ['vote_average', 'runtime'].forEach(field => {
-      if (!Number.isFinite(sanitized[field])) {
-        sanitized[field] = 0;
-      }
-    });
-
-    // Validate dates
-    if (mediaType === 'movie') {
-      if (sanitized.release_date && !/^\d{4}-\d{2}-\d{2}$/.test(sanitized.release_date)) {
-        errors.push(`Invalid release_date format: ${sanitized.release_date}`);
-        sanitized.release_date = '';
-      }
-    } else if (mediaType === 'tv') {
-      if (sanitized.first_air_date && !/^\d{4}-\d{2}-\d{2}$/.test(sanitized.first_air_date)) {
-        errors.push(`Invalid first_air_date format: ${sanitized.first_air_date}`);
-        sanitized.first_air_date = '';
-      }
-    }
-
-    // Ensure genres is array
-    if (!Array.isArray(sanitized.genres)) {
-      sanitized.genres = [];
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors,
-      sanitized
-    };
-  }
-
-  /**
-   * Validate OMDb response
-   * @param {Object} item - OMDb API response
-   * @returns {Object} { isValid: boolean, errors: string[], sanitized: Object }
-   */
-  static validateOMDbMedia(item) {
-    if (!item || typeof item !== 'object') {
-      return { 
-        isValid: false, 
-        errors: ['Empty or invalid OMDb response'], 
-        sanitized: {} 
-      };
-    }
-
-    const errors = [];
-    const sanitized = { ...item };
-
-    // ✅ Check for API error FIRST (most specific)
-    if (sanitized.Error) {
-      return { 
-        isValid: false, 
-        errors: [`OMDb Error: ${sanitized.Error}`],
-        sanitized 
-      };
-    }
-
-    // ✅ Check Response status (second most specific)
-    if (sanitized.Response !== 'True') {
-      return { 
-        isValid: false, 
-        errors: [`OMDb Response not True: ${sanitized.Response}`],
-        sanitized 
-      };
-    }
-
-    // ✅ Only validate fields if Response is True
-    if (!sanitized.imdbID) {
-      errors.push('Missing imdbID');
-      sanitized.imdbID = '';
-    }
-
-    // Parse ratings
-    if (sanitized.imdbRating && sanitized.imdbRating !== 'N/A') {
-      const rating = parseFloat(sanitized.imdbRating);
-      if (!Number.isFinite(rating)) {
-        errors.push(`Invalid imdbRating: ${sanitized.imdbRating}`);
-        sanitized.imdbRating = 'N/A';
-      }
-    }
-
-    // Parse year
-    if (sanitized.Year && sanitized.Year !== 'N/A') {
-      const yearMatch = sanitized.Year.match(/^\d{4}(?:–\d{4})?$/);
-      if (!yearMatch) {
-        errors.push(`Invalid Year format: ${sanitized.Year}`);
-        sanitized.Year = 'N/A';
-      }
-    }
-
-    // Ensure Metascore is numeric
-    if (sanitized.Metascore && sanitized.Metascore !== 'N/A') {
-      const score = parseInt(sanitized.Metascore, 10);
-      if (!Number.isFinite(score) || score < 0 || score > 100) {
-        errors.push(`Invalid Metascore: ${sanitized.Metascore}`);
-        sanitized.Metascore = 'N/A';
-      }
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors,
-      sanitized
-    };
-  }
-
-  /**
-   * Validate episode data from TMDB season endpoint
-   * @param {Object} episode - Episode object
-   * @returns {Object} { isValid: boolean, errors: string[], sanitized: Object }
-   */
-  static validateEpisode(episode) {
-    const errors = [];
-    const sanitized = { ...episode };
-
-    // Required numeric fields
-    ['season_number', 'episode_number'].forEach(field => {
-      if (typeof sanitized[field] !== 'number' || sanitized[field] < 0) {
-        errors.push(`Invalid ${field}: ${sanitized[field]}`);
-        sanitized[field] = 0;
-      }
-    });
-
-    // Optional string fields
-    ['name', 'overview'].forEach(field => {
-      if (typeof sanitized[field] !== 'string') {
-        sanitized[field] = '';
-      }
-    });
-
-    // Validate air date
-    if (sanitized.air_date && !/^\d{4}-\d{2}-\d{2}$/.test(sanitized.air_date)) {
-      errors.push(`Invalid air_date format: ${sanitized.air_date}`);
-      sanitized.air_date = '';
-    }
-
-    // Default vote_average
-    if (!Number.isFinite(sanitized.vote_average)) {
-      sanitized.vote_average = 0;
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors,
-      sanitized
-    };
-  }
-
-  /**
-   * Validate credits/cast data
-   * @param {Object} credits - Credits object from TMDB
-   * @returns {Object} { isValid: boolean, errors: string[], sanitized: Object }
-   */
-  static validateCredits(credits) {
-    const errors = [];
-    const sanitized = { cast: [], crew: [] };
-
-    if (!Array.isArray(credits.cast)) {
-      errors.push('Cast is not an array');
-    } else {
-      sanitized.cast = credits.cast.map(person => {
-        const p = { ...person };
-        if (!p.id || !p.name) {
-          errors.push(`Invalid cast member: ${JSON.stringify(p)}`);
-        }
-        p.id = Number.isFinite(p.id) ? p.id : 0;
-        p.name = String(p.name || 'Unknown');
-        p.character = String(p.character || '');
-        return p;
-      });
-    }
-
-    if (!Array.isArray(credits.crew)) {
-      errors.push('Crew is not an array');
-    } else {
-      sanitized.crew = credits.crew.map(person => {
-        const p = { ...person };
-        if (!p.id || !p.name) {
-          errors.push(`Invalid crew member: ${JSON.stringify(p)}`);
-        }
-        p.id = Number.isFinite(p.id) ? p.id : 0;
-        p.name = String(p.name || 'Unknown');
-        p.job = String(p.job || 'Unknown');
-        p.department = String(p.department || 'Unknown');
-        return p;
-      });
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors,
-      sanitized
-    };
-  }
-
-  /**
-   * Batch validate array of objects
-   * @param {Array} items - Items to validate
-   * @param {string} validator - 'tmdb-movie' | 'tmdb-tv' | 'omdb' | 'episode'
-   * @returns {Object} { total: number, valid: number, errors: Map }
-   */
-  static validateBatch(items, validator = 'tmdb-movie') {
-    if (!Array.isArray(items)) {
-      return { 
-        total: 0, 
-        valid: 0, 
-        invalid: 0,
-        errors: new Map(), 
-        sanitized: [],
-        warning: 'Input is not an array'
-      };
-    }
-
-    if (items.length === 0) {
-      return { 
-        total: 0, 
-        valid: 0, 
-        invalid: 0,
-        errors: new Map(), 
-        sanitized: []
-      };
-    }
-
-    const errors = new Map();
-    const sanitized = [];
-    let valid = 0;
-
-    items.forEach((item, index) => {
-      let result;
-      try {
-        if (validator === 'tmdb-movie') {
-          result = this.validateTMDBMedia(item, 'movie');
-        } else if (validator === 'tmdb-tv') {
-          result = this.validateTMDBMedia(item, 'tv');
-        } else if (validator === 'omdb') {
-          result = this.validateOMDbMedia(item);
-        } else if (validator === 'episode') {
-          result = this.validateEpisode(item);
-        } else {
-          result = { isValid: false, errors: [`Unknown validator: ${validator}`], sanitized: item };
-        }
-      } catch (error) {
-        result = { 
-          isValid: false, 
-          errors: [`Validation error: ${error.message}`], 
-          sanitized: item 
-        };
-      }
-
-      if (result && result.isValid) {
-        valid++;
-      } else if (result) {
-        errors.set(index, result.errors);
-      }
-      sanitized.push(result?.sanitized || item);
-    });
-
-    return {
-      total: items.length,
-      valid,
-      invalid: items.length - valid,
-      errors,
-      sanitized
-    };
-  }
-
-  /**
-   * Check if API response indicates an error
-   * @param {any} response - Response from API
-   * @returns {string|null} Error message or null
-   */
-  static getAPIError(response) {
-    if (!response) return 'Empty response';
-    if (response.status_code) return `TMDB Error: ${response.status_message || response.status_code}`;
-    if (response.Error) return `OMDb Error: ${response.Error}`;
-    if (response.errors) return `API Errors: ${response.errors.join(', ')}`;
-    return null;
-  }
-}
-
-/* ============================================
-   SAFE IndexedDB OPERATION WRAPPER
-   Handles DB errors, retries, and fallback
-   ============================================ */
-class SafeIndexedDBOperation {
-  // Configuration
-  static MAX_RETRIES = 3;
-  static RETRY_DELAY_MS = 100;
-  static QUOTA_WARNING_THRESHOLD = 0.85; // Warn at 85% storage full
-  
-  // Error tracking
-  static errorLog = [];
-  static lastQuotaWarning = 0;
-  static QUOTA_WARNING_COOLDOWN = 3600000; // 1 hour
-
-  /**
-   * Execute a read operation with error handling
-   * @param {IDBDatabase} db - Database connection
-   * @param {string} storeName - Store to read from
-   * @param {string|IDBKeyRange} key - Key to retrieve
-   * @returns {Promise<any>} Retrieved data or null
-   */
-  static async read(db, storeName, key) {
-    if (!db) {
-      this.log('error', 'Database not initialized', { storeName, key });
-      return null;
-    }
-
-    try {
-      return new Promise((resolve, reject) => {
-        const transaction = db.transaction([storeName], 'readonly');
-        const store = transaction.objectStore(storeName);
-        const request = store.get(key);
-
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () => reject(request.error);
-        transaction.onerror = () => reject(transaction.error);
-      });
-    } catch (error) {
-      this.log('error', `Read failed for ${storeName}`, { key, error: error.message });
-      return null;
-    }
-  }
-
-  /**
-   * Execute a write operation with retry logic
-   * @param {IDBDatabase} db - Database connection
-   * @param {string} storeName - Store to write to
-   * @param {any} data - Data to write
-   * @param {string} mode - 'add' | 'put' (default: 'put')
-   * @returns {Promise<boolean>} Success status
-   */
-  static async write(db, storeName, data, mode = 'put') {
-    if (!db) {
-      this.log('error', 'Database not initialized', { storeName });
-      return false;
-    }
-
-    for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
-      try {
-        // ✅ Await the promise so rejections can be caught
-        const result = await new Promise((resolve, reject) => {
-          const transaction = db.transaction([storeName], 'readwrite');
-          const store = transaction.objectStore(storeName);
-          const request = mode === 'add' ? store.add(data) : store.put(data);
-
-          request.onsuccess = () => resolve(true);
-          request.onerror = () => reject(new Error(`Request error: ${request.error?.message || 'unknown'}`));
-          transaction.onerror = () => reject(new Error(`Transaction error: ${transaction.error?.message || 'unknown'}`));
-          transaction.onabort = () => reject(new Error('Transaction aborted'));
-        });
-        return result; // ✅ Return successful result
-      } catch (error) {
-        const isQuotaError = error.name === 'QuotaExceededError';
-        const isAbortError = error.message === 'Transaction aborted';
-
-        if (isQuotaError) {
-          this.log('error', 'Storage quota exceeded', { storeName });
-          this.handleQuotaExceeded(db);
-          return false;
-        }
-
-        // ✅ NOW THIS WORKS - Catch block is reachable
-        if (isAbortError && attempt < this.MAX_RETRIES - 1) {
-          this.log('warn', `Write aborted, retrying (attempt ${attempt + 1}/${this.MAX_RETRIES})`, { storeName });
-          await this.delay(this.RETRY_DELAY_MS * Math.pow(2, attempt));
-          continue; // ✅ Retry loop now executes
-        }
-
-        this.log('error', `Write failed for ${storeName} (attempt ${attempt + 1}/${this.MAX_RETRIES})`, { 
-          error: error.message,
-          isDuplicateKeyError: error.message.includes('ConstraintError'),
-          mode,
-          dataKeys: typeof data === 'object' ? Object.keys(data) : typeof data
-        });
-
-        if (attempt === this.MAX_RETRIES - 1) {
-          return false;
-        }
-
-        // ✅ Exponential backoff
-        await this.delay(this.RETRY_DELAY_MS * Math.pow(2, attempt));
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Execute a batch write with error recovery
-   * @param {IDBDatabase} db - Database connection
-   * @param {string} storeName - Store to write to
-   * @param {Array} items - Items to write
-   * @param {string} mode - 'add' | 'put' (default: 'put')
-   * @returns {Promise<Object>} { successful: number, failed: number, errors: Error[] }
-   */
-  static async writeBatch(db, storeName, items, mode = 'put') {
-    if (!db) {
-      return { successful: 0, failed: (items?.length || 0), errors: ['Database not initialized'], failedIndices: [] };
-    }
-
-    if (!Array.isArray(items)) {
-      return { successful: 0, failed: 0, errors: ['Items is not an array'], failedIndices: [] };
-    }
-
-    if (items.length === 0) {
-      return { successful: 0, failed: 0, errors: [], failedIndices: [] };
-    }
-
-    const results = { successful: 0, failed: 0, errors: [], failedIndices: [] };
-
-    for (let i = 0; i < items.length; i++) {
-      const success = await this.write(db, storeName, items[i], mode);
-      if (success) {
-        results.successful++;
-      } else {
-        results.failed++;
-        results.failedIndices.push(i);
-        // ✅ Error now includes mode context
-        const modeStr = mode === 'add' ? 'add (possible duplicate key)' : 'put';
-        results.errors.push(new Error(`Failed to ${modeStr} item at index ${i}`));
-      }
-    }
-
-    if (results.failed > 0) {
-      this.log('warn', `Batch write: ${results.successful}/${items.length} succeeded, ${results.failed} failed`, {
-        storeName,
-        mode,
-        failedIndices: results.failedIndices
-      });
-    } else if (items.length > 0) {
-      this.log('info', `Batch write: all ${results.successful} items succeeded`, { storeName });
-    }
-
-    return results;
-  }
-
-  /**
-   * Execute a delete operation
-   * @param {IDBDatabase} db - Database connection
-   * @param {string} storeName - Store to delete from
-   * @param {string|IDBKeyRange} key - Key to delete
-   * @returns {Promise<boolean>} Success status
-   */
-  static async delete(db, storeName, key) {
-    if (!db) {
-      this.log('error', 'Database not initialized', { storeName, key });
-      return false;
-    }
-
-    try {
-      return new Promise((resolve, reject) => {
-        const transaction = db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.delete(key);
-
-        request.onsuccess = () => resolve(true);
-        request.onerror = () => reject(request.error);
-        transaction.onerror = () => reject(transaction.error);
-      });
-    } catch (error) {
-      this.log('error', `Delete failed for ${storeName}`, { key, error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Execute a query/filter operation
-   * @param {IDBDatabase} db - Database connection
-   * @param {string} storeName - Store to query
-   * @param {Function} filter - Filter function (receives item, returns boolean)
-   * @param {number} limit - Max results (default: 0 = all)
-   * @returns {Promise<Array>} Matching items
-   */
-  static async query(db, storeName, filter = () => true, limit = 0) {
-    if (!db) {
-      this.log('error', 'Database not initialized', { storeName });
-      return [];
-    }
-
-    try {
-      return new Promise((resolve, reject) => {
-        const transaction = db.transaction([storeName], 'readonly');
-        const store = transaction.objectStore(storeName);
-        const request = store.getAll();
-        const results = [];
-
-        request.onsuccess = () => {
-          const items = request.result || [];
-          for (const item of items) {
-            if (filter(item)) {
-              results.push(item);
-              if (limit > 0 && results.length >= limit) break;
-            }
-          }
-          resolve(results);
-        };
-
-        request.onerror = () => reject(request.error);
-        transaction.onerror = () => reject(transaction.error);
-      });
-    } catch (error) {
-      this.log('error', `Query failed for ${storeName}`, { error: error.message });
-      return [];
-    }
-  }
-
-  /**
-   * Clear all data from a store
-   * @param {IDBDatabase} db - Database connection
-   * @param {string} storeName - Store to clear
-   * @returns {Promise<boolean>} Success status
-   */
-  static async clear(db, storeName) {
-    if (!db) {
-      this.log('error', 'Database not initialized', { storeName });
-      return false;
-    }
-
-    try {
-      return new Promise((resolve, reject) => {
-        const transaction = db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.clear();
-
-        request.onsuccess = () => resolve(true);
-        request.onerror = () => reject(request.error);
-        transaction.onerror = () => reject(transaction.error);
-      });
-    } catch (error) {
-      this.log('error', `Clear failed for ${storeName}`, { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Get storage quota usage
-   * @returns {Promise<Object>} { usage: number, quota: number, percentUsed: number }
-   */
-  static async getStorageInfo() {
-    try {
-      if (navigator.storage && navigator.storage.estimate) {
-        const estimate = await navigator.storage.estimate();
-        return {
-          usage: estimate.usage,
-          quota: estimate.quota,
-          percentUsed: estimate.usage / estimate.quota
-        };
-      }
-      return { usage: 0, quota: 0, percentUsed: 0 };
-    } catch (error) {
-      this.log('error', 'Failed to get storage info', { error: error.message });
-      return { usage: 0, quota: 0, percentUsed: 0 };
-    }
-  }
-
-  /**
-   * Check if storage quota is running low
-   * @returns {Promise<boolean>}
-   */
-  static async isStorageLow() {
-    const info = await this.getStorageInfo();
-    return info.percentUsed > this.QUOTA_WARNING_THRESHOLD;
-  }
-
-  /**
-   * Handle quota exceeded error - implement cleanup strategy
-   * @param {IDBDatabase} db - Database connection
-   */
-  static async handleQuotaExceeded(db) {
-    const now = Date.now();
-    
-    // Rate-limit quota warnings
-    if (now - this.lastQuotaWarning < this.QUOTA_WARNING_COOLDOWN) {
-      return;
-    }
-    this.lastQuotaWarning = now;
-
-    const info = await this.getStorageInfo();
-    const percentUsed = Math.round(info.percentUsed * 100);
-
-    this.log('warn', `Storage quota exceeded (${percentUsed}% used)`, {
-      usage: info.usage,
-      quota: info.quota
-    });
-
-    // Strategy 1: Clear old notifications (lowest priority data)
-    if (db && AppState.cache.notifications.length > 100) {
-      AppState.cache.notifications = AppState.cache.notifications.slice(-50);
-      this.log('info', 'Cleared old notifications to free space');
-    }
-
-    // Strategy 2: Clear old video status cache (temporary data)
-    if (AppState.cache.videoStatus.size > 500) {
-      // Keep only recent 250 entries
-      const recentEntries = Array.from(AppState.cache.videoStatus.entries()).slice(-250);
-      AppState.cache.videoStatus.clear();
-      recentEntries.forEach(([k, v]) => AppState.cache.videoStatus.set(k, v));
-      this.log('info', 'Pruned video status cache');
-    }
-
-    // Notify user
-    showNotification('Storage is running low. Some features may be limited.', 'warning', 5000);
-  }
-
-  /**
-   * Log operation result
-   * @param {string} level - 'error' | 'warn' | 'info'
-   * @param {string} message - Log message
-   * @param {Object} context - Additional context
-   */
-  static log(level, message, context = {}) {
-    const timestamp = new Date().toISOString();
-    const entry = { timestamp, level, message, context };
-    
-    this.errorLog.push(entry);
-    
-    // Keep only last 100 entries
-    if (this.errorLog.length > 100) {
-      this.errorLog = this.errorLog.slice(-100);
-    }
-
-    // Console output
-    const prefix = `[SafeIndexedDB] ${level.toUpperCase()}`;
-    if (level === 'error') {
-      console.error(`${prefix}: ${message}`, context);
-    } else if (level === 'warn') {
-      console.warn(`${prefix}: ${message}`, context);
-    } else {
-      console.log(`${prefix}: ${message}`, context);
-    }
-  }
-
-  /**
-   * Get error log for debugging
-   * @param {number} limit - Max entries to return (default: 50)
-   * @returns {Array} Recent error log entries
-   */
-  static getErrorLog(limit = 50) {
-    return this.errorLog.slice(-limit);
-  }
-
-  /**
-   * Clear error log
-   */
-  static clearErrorLog() {
-    this.errorLog = [];
-  }
-
-  /**
-   * Helper to delay async operations
-   * @param {number} ms - Milliseconds to delay
-   */
-  static delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-}
-
-/* ============================================
-   SAFE DOM OPERATION WRAPPER
-   Error boundary for DOM manipulations
-   ============================================ */
-class SafeDOMOperation {
-  static errorLog = [];
-  static MAX_LOG_ENTRIES = 100;
-
-  /**
-   * Safely query DOM element
-   * @param {string} selector - CSS selector
-   * @param {HTMLElement} context - Context element (default: document)
-   * @returns {HTMLElement|null} Element or null
-   */
-  static querySelector(selector, context = document) {
-    try {
-      if (!selector || typeof selector !== 'string') {
-        this.warn(`Invalid selector: ${typeof selector}`, { selector });
-        return null;
-      }
-
-      const element = context.querySelector(selector);
-      return element || null;
-    } catch (error) {
-      this.error(`querySelector failed for "${selector}"`, { error: error.message });
-      return null;
-    }
-  }
-
-  /**
-   * Safely query multiple DOM elements
-   * @param {string} selector - CSS selector
-   * @param {HTMLElement} context - Context element (default: document)
-   * @returns {Array<HTMLElement>} Array of elements (empty if error)
-   */
-  static querySelectorAll(selector, context = document) {
-    try {
-      if (!selector || typeof selector !== 'string') {
-        this.warn(`Invalid selector: ${typeof selector}`, { selector });
-        return [];
-      }
-
-      return Array.from(context.querySelectorAll(selector));
-    } catch (error) {
-      this.error(`querySelectorAll failed for "${selector}"`, { error: error.message });
-      return [];
-    }
-  }
-
-  /**
-   * Safely get element by ID
-   * @param {string} id - Element ID
-   * @returns {HTMLElement|null} Element or null
-   */
-  static getElementById(id) {
-    try {
-      if (!id || typeof id !== 'string') {
-        return null;
-      }
-      return document.getElementById(id) || null;
-    } catch (error) {
-      this.error(`getElementById failed for "${id}"`, { error: error.message });
-      return null;
-    }
-  }
-
-  /**
-   * Safely set text content
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} text - Text to set
-   * @returns {boolean} Success status
-   */
-  static setText(element, text) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('setText: element not found', { element });
-        return false;
-      }
-
-      el.textContent = String(text || '');
-      return true;
-    } catch (error) {
-      this.error('setText failed', { error: error.message, element });
-      return false;
-    }
-  }
-
-  /**
-   * Safely set HTML content
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} html - HTML to set
-   * @returns {boolean} Success status
-   */
-  static setHTML(element, html) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('setHTML: element not found', { element });
-        return false;
-      }
-
-      const temp = document.createElement('div');
-      temp.innerHTML = html;
-      
-      // ✅ Remove ALL dangerous tags
-      const dangerousTags = ['script', 'iframe', 'object', 'embed', 'link', 'style'];
-      dangerousTags.forEach(tag => {
-        temp.querySelectorAll(tag).forEach(el => el.remove());
-      });
-      
-      // ✅ Remove ALL event handler attributes and dangerous protocols
-      temp.querySelectorAll('*').forEach(node => {
-        const attrsToRemove = [];
-        Array.from(node.attributes || []).forEach(attr => {
-          if (attr.name.startsWith('on') ||  // Block onclick, onerror, etc.
-              (attr.name === 'src' && attr.value.startsWith('javascript:')) ||
-              (attr.name === 'href' && attr.value.startsWith('javascript:'))) {
-            attrsToRemove.push(attr.name);
-          }
-        });
-        attrsToRemove.forEach(name => node.removeAttribute(name));
-      });
-
-      el.innerHTML = temp.innerHTML;
-      return true;
-    } catch (error) {
-      this.error('setHTML failed', { error: error.message, element });
-      return false;
-    }
-  }
-
-  /**
-   * Safely set attribute
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} attr - Attribute name
-   * @param {string} value - Attribute value
-   * @returns {boolean} Success status
-   */
-  static setAttribute(element, attr, value) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('setAttribute: element not found', { element, attr });
-        return false;
-      }
-
-      el.setAttribute(attr, String(value || ''));
-      return true;
-    } catch (error) {
-      this.error('setAttribute failed', { error: error.message, attr });
-      return false;
-    }
-  }
-
-  /**
-   * Safely get attribute
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} attr - Attribute name
-   * @returns {string|null} Attribute value or null
-   */
-  static getAttribute(element, attr) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        return null;
-      }
-
-      return el.getAttribute(attr);
-    } catch (error) {
-      this.error('getAttribute failed', { error: error.message, attr });
-      return null;
-    }
-  }
-
-  /**
-   * Safely add class
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string|string[]} className - Class name(s)
-   * @returns {boolean} Success status
-   */
-  static addClass(element, className) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('addClass: element not found', { element });
-        return false;
-      }
-
-      const classes = Array.isArray(className) ? className : [className];
-      el.classList.add(...classes.filter(c => c && typeof c === 'string'));
-      return true;
-    } catch (error) {
-      this.error('addClass failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely remove class
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string|string[]} className - Class name(s)
-   * @returns {boolean} Success status
-   */
-  static removeClass(element, className) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('removeClass: element not found', { element });
-        return false;
-      }
-
-      const classes = Array.isArray(className) ? className : [className];
-      el.classList.remove(...classes.filter(c => c && typeof c === 'string'));
-      return true;
-    } catch (error) {
-      this.error('removeClass failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely toggle class
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} className - Class name
-   * @param {boolean} force - Force add or remove
-   * @returns {boolean} New class state
-   */
-  static toggleClass(element, className, force) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('toggleClass: element not found', { element });
-        return false;
-      }
-
-      return el.classList.toggle(className, force);
-    } catch (error) {
-      this.error('toggleClass failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely add event listener
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} event - Event name
-   * @param {Function} handler - Event handler
-   * @param {Object} options - Listener options
-   * @returns {boolean} Success status
-   */
-  static addEventListener(element, event, handler, options = {}) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('addEventListener: element not found', { element, event });
-        return false;
-      }
-
-      if (typeof handler !== 'function') {
-        this.warn('addEventListener: handler is not a function', { event });
-        return false;
-      }
-
-      el.addEventListener(event, handler, options);
-      return true;
-    } catch (error) {
-      this.error('addEventListener failed', { error: error.message, event });
-      return false;
-    }
-  }
-
-  /**
-   * Safely remove event listener
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {string} event - Event name
-   * @param {Function} handler - Event handler
-   * @param {Object} options - Listener options
-   * @returns {boolean} Success status
-   */
-  static removeEventListener(element, event, handler, options = {}) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('removeEventListener: element not found', { element, event });
-        return false;
-      }
-
-      el.removeEventListener(event, handler, options);
-      return true;
-    } catch (error) {
-      this.error('removeEventListener failed', { error: error.message, event });
-      return false;
-    }
-  }
-
-  /**
-   * Safely append child element
-   * @param {HTMLElement|string} parent - Parent element or selector
-   * @param {HTMLElement} child - Child element to append
-   * @returns {boolean} Success status
-   */
-  static appendChild(parent, child) {
-    try {
-      const parentEl = typeof parent === 'string' ? this.querySelector(parent) : parent;
-      if (!parentEl || !child) {
-        this.warn('appendChild: parent or child missing', { parent });
-        return false;
-      }
-
-      parentEl.appendChild(child);
-      return true;
-    } catch (error) {
-      this.error('appendChild failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely remove element
-   * @param {HTMLElement|string} element - Element or selector
-   * @returns {boolean} Success status
-   */
-  static remove(element) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('remove: element not found', { element });
-        return false;
-      }
-
-      el.remove();
-      return true;
-    } catch (error) {
-      this.error('remove failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely clear element's children
-   * @param {HTMLElement|string} element - Element or selector
-   * @returns {boolean} Success status
-   */
-  static clear(element) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('clear: element not found', { element });
-        return false;
-      }
-
-      while (el.firstChild) {
-        el.removeChild(el.firstChild);
-      }
-      return true;
-    } catch (error) {
-      this.error('clear failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely set element style property
-   * @param {HTMLElement|string} element - Element or selector
-   * @param {Object|string} prop - Property name or object of properties
-   * @param {string} value - Value (if prop is string)
-   * @returns {boolean} Success status
-   */
-  static setStyle(element, prop, value) {
-    try {
-      const el = typeof element === 'string' ? this.querySelector(element) : element;
-      if (!el) {
-        this.warn('setStyle: element not found', { element });
-        return false;
-      }
-
-      if (typeof prop === 'object') {
-        Object.assign(el.style, prop);
-      } else {
-        el.style[prop] = value;
-      }
-      return true;
-    } catch (error) {
-      this.error('setStyle failed', { error: error.message });
-      return false;
-    }
-  }
-
-  /**
-   * Safely perform operation on element(s)
-   * @param {string} selector - CSS selector
-   * @param {Function} callback - Function to execute for each element
-   * @returns {number} Number of elements processed
-   */
-  static forEach(selector, callback) {
-    try {
-      if (typeof callback !== 'function') {
-        this.warn('forEach: callback is not a function');
-        return { processed: 0, errors: [] }; // ✅ Clear return structure
-      }
-
-      const elements = this.querySelectorAll(selector);
-      const errors = []; // ✅ Collect all errors
-
-      elements.forEach((el, index) => {
-        try {
-          callback(el, index);
-        } catch (error) {
-          errors.push({ index, error: error.message });
-          this.error(`forEach callback failed at index ${index}`, { error: error.message });
-        }
-      });
-
-      if (errors.length > 0) {
-        // ✅ Warn with failed indices for easy retry
-        this.warn(`forEach: ${errors.length}/${elements.length} callbacks failed`, { 
-          failedIndices: errors.map(e => e.index) 
-        });
-      }
-
-      return { processed: elements.length, errors }; // ✅ Return both count AND errors
-    } catch (error) {
-      this.error('forEach failed', { error: error.message });
-      return { processed: 0, errors: [{ index: -1, error: error.message }] };
-    }
-  }
-
-  /**
-   * Log error
-   * @param {string} message - Error message
-   * @param {Object} context - Additional context
-   */
-  static error(message, context = {}) {
-    this.logEntry('error', message, context);
-    console.error(`[SafeDOM] ERROR: ${message}`, context);
-  }
-
-  /**
-   * Log warning
-   * @param {string} message - Warning message
-   * @param {Object} context - Additional context
-   */
-  static warn(message, context = {}) {
-    this.logEntry('warn', message, context);
-    console.warn(`[SafeDOM] WARN: ${message}`, context);
-  }
-
-  /**
-   * Log info
-   * @param {string} message - Info message
-   * @param {Object} context - Additional context
-   */
-  static info(message, context = {}) {
-    this.logEntry('info', message, context);
-    console.log(`[SafeDOM] INFO: ${message}`, context);
-  }
-
-  /**
-   * Internal logging
-   * @private
-   */
-  static logEntry(level, message, context) {
-    const timestamp = new Date().toISOString();
-    this.errorLog.push({ timestamp, level, message, context });
-
-    if (this.errorLog.length > this.MAX_LOG_ENTRIES) {
-      this.errorLog = this.errorLog.slice(-this.MAX_LOG_ENTRIES);
-    }
-  }
-
-  /**
-   * Get error log for debugging
-   * @param {number} limit - Max entries to return
-   * @returns {Array} Error log entries
-   */
-  static getErrorLog(limit = 50) {
-    return this.errorLog.slice(-limit);
-  }
-
-  /**
-   * Clear error log
-   */
-  static clearErrorLog() {
-    this.errorLog = [];
-  }
-}
-
-/* ============================================
-   INTEGRATION LAYER - Defensive Classes
-   Bridges existing code with defensive patterns
-   ============================================ */
-
-/**
- * Safe wrapper for database write operations
- * Combines existing saveToDatabase logic with SafeIndexedDBOperation error handling
- */
-async function saveToDatabase_Safe(db, data, storeName = "movies") {
-  if (!db) {
-    console.error('Database not initialized');
-    return false;
-  }
-
-  // Validate data using DataValidator if it's media
-  if ((storeName === 'movies' || storeName === 'series') && data) {
-    const items = Array.isArray(data) ? data : [data];
-    const mediaType = storeName === 'movies' ? 'movie' : 'tv';
-    
-    for (const item of items) {
-      const validation = DataValidator.validateTMDBMedia(item, mediaType);
-      if (!validation.isValid) {
-        SafeIndexedDBOperation.log('warn', `Data validation failed for ${storeName}`, {
-          errors: validation.errors,
-          item: item.tmdbID || item.imdbID
-        });
-      }
-      // Use sanitized version
-      Object.assign(item, validation.sanitized);
-    }
-  }
-
-  // Use SafeIndexedDBOperation for actual write with retry logic
-  const mode = Array.isArray(data) ? 'batch' : 'single';
-  
-  if (mode === 'batch') {
-    const result = await SafeIndexedDBOperation.writeBatch(db, storeName, data, 'put');
-    if (result.successful > 0) {
-      console.log(`✓ Saved ${result.successful} items to ${storeName}`);
-    }
-    return result.successful > 0;
-  } else {
-    return SafeIndexedDBOperation.write(db, storeName, data, 'put');
-  }
-}
-
-/**
- * Safe wrapper for database read operations
- */
-async function readFromDatabase_Safe(db, storeName, key) {
-  if (!db) {
-    console.error('Database not initialized');
-    return null;
-  }
-
-  return SafeIndexedDBOperation.read(db, storeName, key);
-}
-
-/**
- * Safe wrapper for database query operations
- */
-async function queryDatabase_Safe(db, storeName, filter = () => true, limit = 0) {
-  if (!db) {
-    console.error('Database not initialized');
-    return [];
-  }
-
-  return SafeIndexedDBOperation.query(db, storeName, filter, limit);
-}
-
-/**
- * Validate API response and return sanitized data
- * Handles TMDB and OMDb responses
- */
-function validateAPIResponse(response, source = 'tmdb') {
-  if (!response) {
-    SafeIndexedDBOperation.log('error', 'Empty API response');
-    return { isValid: false, data: null, errors: ['Empty response'] };
-  }
-
-  const apiError = DataValidator.getAPIError(response);
-  if (apiError) {
-    SafeIndexedDBOperation.log('error', apiError, { response });
-    return { isValid: false, data: null, errors: [apiError] };
-  }
-
-  if (source === 'tmdb') {
-    return DataValidator.validateTMDBMedia(response, response.media_type === 'tv' ? 'tv' : 'movie');
-  } else if (source === 'omdb') {
-    return DataValidator.validateOMDbMedia(response);
-  }
-
-  return { isValid: true, sanitized: response, errors: [] };
-}
-
-/**
- * Validate batch API responses
- */
-function validateAPIBatch(items, source = 'tmdb') {
-  if (!Array.isArray(items)) {
-    return { total: 0, valid: 0, sanitized: [] };
-  }
-
-  let validator = 'tmdb-movie';
-  if (source === 'omdb') {
-    validator = 'omdb';
-  } else if (source === 'episodes') {
-    validator = 'episode';
-  }
-
-  return DataValidator.validateBatch(items, validator);
-}
-
-/**
- * Safe DOM query wrapper
- * Returns element or null, never throws
- */
-function querySelector_Safe(selector, context = document) {
-  return SafeDOMOperation.querySelector(selector, context);
-}
-
-/**
- * Safe DOM query all wrapper
- */
-function querySelectorAll_Safe(selector, context = document) {
-  return SafeDOMOperation.querySelectorAll(selector, context);
-}
-
-/**
- * Safe element creation with automatic error handling
- */
-function createElement_Safe(tagName, attributes = {}, innerHTML = '') {
-  try {
-    const element = document.createElement(tagName);
-    
-    // Set attributes safely
-    Object.entries(attributes).forEach(([key, value]) => {
-      SafeDOMOperation.setAttribute(element, key, value);
-    });
-
-    // Set content safely
-    if (innerHTML) {
-      SafeDOMOperation.setHTML(element, innerHTML);
-    }
-
-    return element;
-  } catch (error) {
-    SafeDOMOperation.error('createElement_Safe failed', { tagName, error: error.message });
-    return null;
-  }
-}
-
-/**
- * Safe text content setter
- */
-function setTextContent_Safe(element, text) {
-  return SafeDOMOperation.setText(element, text);
-}
-
-/**
- * Safe HTML setter with sanitization
- */
-function setHTMLContent_Safe(element, html) {
-  return SafeDOMOperation.setHTML(element, html);
-}
-
-/**
- * Safe class manipulation
- */
-function toggleClass_Safe(element, className, force) {
-  return SafeDOMOperation.toggleClass(element, className, force);
-}
-
-/**
- * Safe event listener wrapper
- */
-function attachEvent_Safe(element, event, handler, options = {}) {
-  return SafeDOMOperation.addEventListener(element, event, handler, options);
-}
-
-/* ============================================
-   DEFENSIVE LAYER TEST SUITE
-   Validates error handling & recovery
-   ============================================ */
-
-const DefensiveLayerTests = {
-  /**
-   * Run all tests and report results
-   */
-  async runAll() {
-    console.group('🧪 DEFENSIVE LAYER TEST SUITE');
-    const results = {
-      passed: 0,
-      failed: 0,
-      tests: []
-    };
-
-    // Test DataValidator
-    await this.testDataValidator(results);
-    
-    // Test SafeIndexedDBOperation
-    await this.testSafeIndexedDB(results);
-    
-    // Test SafeDOMOperation
-    this.testSafeDOMOperation(results);
-
-    // Summary
-    console.groupEnd();
-    console.log(`\n✅ TESTS PASSED: ${results.passed}`);
-    console.log(`❌ TESTS FAILED: ${results.failed}`);
-    console.log(`📊 TOTAL: ${results.passed + results.failed}\n`);
-
-    return results;
-  },
-
-  /**
-   * Test DataValidator with various scenarios
-   */
-  async testDataValidator(results) {
-    console.group('DataValidator Tests');
-
-    // Test 1: Valid TMDB movie
-    const validMovie = {
-      id: 550,
-      title: 'Fight Club',
-      overview: 'A computer programmer...',
-      vote_count: 10000,
-      popularity: 50.5,
-      poster_path: '/path.jpg',
-      release_date: '1999-10-15'
-    };
-    const movieValidation = DataValidator.validateTMDBMedia(validMovie, 'movie');
-    this.assert(movieValidation.isValid === true, 'Valid movie should pass', results);
-
-    // Test 2: Missing required field
-    const invalidMovie = {
-      id: 550,
-      // missing title
-      vote_count: 'not a number',
-      popularity: 50.5
-    };
-    const invalidValidation = DataValidator.validateTMDBMedia(invalidMovie, 'movie');
-    this.assert(invalidValidation.errors.length > 0, 'Invalid movie should have errors', results);
-    this.assert(!invalidValidation.isValid, 'Invalid movie validation should fail', results);
-
-    // Test 3: OMDb validation - good response
-    const omdbValid = {
-      Response: 'True',
-      imdbID: 'tt0137523',
-      imdbRating: '8.8',
-      Metascore: '67',
-      Year: '1999'
-    };
-    const omdbValidation = DataValidator.validateOMDbMedia(omdbValid);
-    this.assert(omdbValidation.isValid === true, 'Valid OMDb should pass', results);
-
-    // Test 4: OMDb error response
-    const omdbError = {
-      Response: 'False',
-      Error: 'Incorrect IMDb ID.'
-    };
-    const omdbErrorValidation = DataValidator.validateOMDbMedia(omdbError);
-    this.assert(omdbErrorValidation.isValid === false, 'OMDb error should fail', results);
-
-    // Test 5: Episode validation
-    const validEpisode = {
-      season_number: 1,
-      episode_number: 5,
-      name: 'Episode Name',
-      overview: 'Episode description',
-      air_date: '2020-01-15',
-      vote_average: 8.5
-    };
-    const episodeValidation = DataValidator.validateEpisode(validEpisode);
-    this.assert(episodeValidation.isValid === true, 'Valid episode should pass', results);
-
-    // Test 6: Credits validation
-    const validCredits = {
-      cast: [
-        { id: 1, name: 'Actor One', character: 'Character' },
-        { id: 2, name: 'Actor Two', character: 'Character 2' }
-      ],
-      crew: [
-        { id: 100, name: 'Director', job: 'Director', department: 'Directing' }
-      ]
-    };
-    const creditsValidation = DataValidator.validateCredits(validCredits);
-    this.assert(creditsValidation.isValid === true, 'Valid credits should pass', results);
-
-    // Test 7: Batch validation
-    const batch = [validMovie, invalidMovie, validMovie];
-    const batchValidation = DataValidator.validateBatch(batch, 'tmdb-movie');
-    this.assert(batchValidation.total === 3, 'Batch should contain 3 items', results);
-    this.assert(batchValidation.valid === 2, 'Batch should have 2 valid items', results);
-    this.assert(batchValidation.invalid === 1, 'Batch should have 1 invalid item', results);
-
-    // Test 8: API error detection
-    const apiError = { status_code: 401, status_message: 'Unauthorized' };
-    const detectedError = DataValidator.getAPIError(apiError);
-    this.assert(detectedError !== null, 'Should detect API error', results);
-    this.assert(detectedError.includes('401'), 'Error message should contain status code', results);
-
-    console.groupEnd();
-  },
-
-  /**
-   * Test SafeIndexedDBOperation
-   */
-  async testSafeIndexedDB(results) {
-    console.group('SafeIndexedDBOperation Tests');
-
-    // Test 1: Storage info retrieval
-    const storageInfo = await SafeIndexedDBOperation.getStorageInfo();
-    this.assert(typeof storageInfo.usage === 'number', 'Storage usage should be number', results);
-    this.assert(typeof storageInfo.quota === 'number', 'Storage quota should be number', results);
-    this.assert(storageInfo.percentUsed >= 0 && storageInfo.percentUsed <= 1, 'Percent should be 0-1', results);
-
-    // Test 2: Storage status check
-    const isLow = await SafeIndexedDBOperation.isStorageLow();
-    this.assert(typeof isLow === 'boolean', 'isStorageLow should return boolean', results);
-
-    // Test 3: Error logging
-    SafeIndexedDBOperation.log('test', 'Test error message', { testData: true });
-    const errorLog = SafeIndexedDBOperation.getErrorLog();
-    this.assert(errorLog.length > 0, 'Error log should have entries', results);
-    this.assert(errorLog[errorLog.length - 1].message === 'Test error message', 'Should log message', results);
-
-    // Test 4: Error log limit
-    for (let i = 0; i < 150; i++) {
-      SafeIndexedDBOperation.log('info', `Message ${i}`);
-    }
-    const limitedLog = SafeIndexedDBOperation.getErrorLog();
-    this.assert(limitedLog.length <= 100, 'Error log should be limited to 100 entries', results);
-
-    // Test 5: Error log clearing
-    SafeIndexedDBOperation.clearErrorLog();
-    const clearedLog = SafeIndexedDBOperation.getErrorLog();
-    this.assert(clearedLog.length === 0, 'Error log should be cleared', results);
-
-    console.groupEnd();
-  },
-
-  /**
-   * Test SafeDOMOperation
-   */
-  testSafeDOMOperation(results) {
-    console.group('SafeDOMOperation Tests');
-
-    // Test 1: Query non-existent element returns null
-    const notFound = SafeDOMOperation.querySelector('#nonexistent-element-12345');
-    this.assert(notFound === null, 'Non-existent element should return null', results);
-
-    // Test 2: QueryAll non-existent elements returns empty array
-    const notFoundAll = SafeDOMOperation.querySelectorAll('.nonexistent-class-12345');
-    this.assert(Array.isArray(notFoundAll), 'QueryAll should return array', results);
-    this.assert(notFoundAll.length === 0, 'QueryAll non-existent should return empty array', results);
-
-    // Test 3: Invalid selector handling
-    const invalidSelector = SafeDOMOperation.querySelector(null);
-    this.assert(invalidSelector === null, 'Invalid selector should return null', results);
-
-    // Test 4: Class operations on non-existent element
-    const classResult = SafeDOMOperation.addClass('#nonexistent', 'test-class');
-    this.assert(classResult === false, 'addClass on non-existent should return false', results);
-
-    // Test 5: Create test element and test setText
-    const testDiv = document.createElement('div');
-    testDiv.id = 'test-safe-dom-div';
-    document.body.appendChild(testDiv);
-
-    const setTextResult = SafeDOMOperation.setText(testDiv, 'Test Content');
-    this.assert(setTextResult === true, 'setText should return true', results);
-    this.assert(testDiv.textContent === 'Test Content', 'setText should set content', results);
-
-    // Test 6: setHTML with sanitization
-    const setHTMLResult = SafeDOMOperation.setHTML(testDiv, '<span>Safe HTML</span><script>alert("bad")</script>');
-    this.assert(setHTMLResult === true, 'setHTML should return true', results);
-    this.assert(testDiv.innerHTML.includes('<span>Safe HTML</span>'), 'setHTML should include span', results);
-    this.assert(!testDiv.innerHTML.includes('<script>'), 'setHTML should remove scripts', results);
-
-    // Test 7: setAttribute
-    const attrResult = SafeDOMOperation.setAttribute(testDiv, 'data-test', 'test-value');
-    this.assert(attrResult === true, 'setAttribute should return true', results);
-    this.assert(testDiv.getAttribute('data-test') === 'test-value', 'getAttribute should return value', results);
-
-    // Test 8: Class manipulation
-    const addResult = SafeDOMOperation.addClass(testDiv, 'test-class');
-    this.assert(addResult === true, 'addClass should return true', results);
-    this.assert(testDiv.classList.contains('test-class'), 'Element should have class', results);
-
-    const removeResult = SafeDOMOperation.removeClass(testDiv, 'test-class');
-    this.assert(removeResult === true, 'removeClass should return true', results);
-    this.assert(!testDiv.classList.contains('test-class'), 'Element should not have class', results);
-
-    // Test 9: toggleClass
-    const toggleResult = SafeDOMOperation.toggleClass(testDiv, 'toggle-class');
-    this.assert(toggleResult === true, 'toggleClass should return true', results);
-    this.assert(testDiv.classList.contains('toggle-class'), 'Class should be toggled on', results);
-
-    // Test 10: Event listener
-    let eventFired = false;
-    const handler = () => { eventFired = true; };
-    const listenerResult = SafeDOMOperation.addEventListener(testDiv, 'click', handler);
-    this.assert(listenerResult === true, 'addEventListener should return true', results);
-    testDiv.click();
-    this.assert(eventFired === true, 'Event handler should fire', results);
-
-    // Test 11: forEach with selector
-    const listItem1 = document.createElement('li');
-    listItem1.className = 'test-item';
-    const listItem2 = document.createElement('li');
-    listItem2.className = 'test-item';
-    document.body.appendChild(listItem1);
-    document.body.appendChild(listItem2);
-
-    let countForEach = 0;
-    SafeDOMOperation.forEach('.test-item', () => {
-      countForEach++;
-    });
-    this.assert(countForEach === 2, 'forEach should process 2 items', results);
-
-    // Test 12: Error log
-    SafeDOMOperation.error('Test error');
-    const domErrorLog = SafeDOMOperation.getErrorLog();
-    this.assert(domErrorLog.length > 0, 'DOM error log should have entries', results);
-
-    // Cleanup
-    testDiv.remove();
-    listItem1.remove();
-    listItem2.remove();
-
-    console.groupEnd();
-  },
-
-  /**
-   * Assertion helper
-   */
-  assert(condition, description, results) {
-    if (condition) {
-      console.log(`✅ ${description}`);
-      results.passed++;
-    } else {
-      console.error(`❌ ${description}`);
-      results.failed++;
-    }
-    results.tests.push({ description, passed: condition });
-  }
-};
-
-/* ============================================
-   PERFORMANCE OPTIMIZATION LAYER
-   Caching, memoization, and metrics
-   ============================================ */
-
-class PerformanceOptimizer {
-  // Validation cache - store validation results for 5 minutes
-  static validationCache = new Map();
-  static VALIDATION_CACHE_TTL = 5 * 60 * 1000;  // 5 minutes
-
-  // DOM batch update queue
-  static domUpdateQueue = [];
-  static pendingAnimationFrame = false;
-
-  // Performance metrics
-  static metrics = {
-    dbOperations: { total: 0, avgDuration: 0, totalDuration: 0 },
-    validations: { total: 0, cached: 0, avgDuration: 0, totalDuration: 0 },
-    domUpdates: { total: 0, batched: 0, avgDuration: 0, totalDuration: 0 }
-  };
-
-  /**
-   * Validate with caching
-   * Returns cached result if recent, otherwise validates
-   */
-  static validateWithCache(data, source = 'tmdb', cacheKey = null) {
-    // Generate cache key from data if not provided
-    const key = cacheKey || this.generateCacheKey(data, source);
-    
-    // Check cache
-    const cached = this.validationCache.get(key);
-    if (cached && Date.now() - cached.timestamp < this.VALIDATION_CACHE_TTL) {
-      this.metrics.validations.cached++;
-      return cached.result;
-    }
-
-    // Validate
-    const startTime = performance.now();
-    let result;
-
-    if (source === 'tmdb') {
-      const mediaType = data.media_type === 'tv' ? 'tv' : 'movie';
-      result = DataValidator.validateTMDBMedia(data, mediaType);
-    } else if (source === 'omdb') {
-      result = DataValidator.validateOMDbMedia(data);
-    } else if (source === 'episode') {
-      result = DataValidator.validateEpisode(data);
-    }
-
-    const duration = performance.now() - startTime;
-    this.recordMetric('validations', duration);
-
-    // Cache result
-    this.validationCache.set(key, {
-      result,
-      timestamp: Date.now()
-    });
-
-    // Clean old cache entries periodically
-    if (this.validationCache.size > 1000) {
-      this.pruneValidationCache();
-    }
-
-    return result;
-  }
-
-  /**
-   * Generate deterministic cache key
-   */
-  static generateCacheKey(data, source) {
-    if (data.tmdbID || data.id) {
-      return `${source}:${data.tmdbID || data.id}`;
-    }
-    return `${source}:${JSON.stringify(data).substring(0, 50)}`;
-  }
-
-  /**
-   * Remove expired cache entries
-   */
-  static pruneValidationCache() {
-    const now = Date.now();
-    for (const [key, entry] of this.validationCache.entries()) {
-      if (now - entry.timestamp > this.VALIDATION_CACHE_TTL) {
-        this.validationCache.delete(key);
-      }
-    }
-  }
-
-  /**
-   * Clear validation cache
-   */
-  static clearValidationCache() {
-    this.validationCache.clear();
-  }
-
-  /**
-   * Batch DOM updates to single reflow/repaint
-   */
-  static batchDOMUpdate(callback) {
-    this.domUpdateQueue.push(callback);
-
-    if (!this.pendingAnimationFrame) {
-      this.pendingAnimationFrame = true;
-      requestAnimationFrame(() => {
-        const startTime = performance.now();
-        
-        // Execute all batched updates
-        while (this.domUpdateQueue.length > 0) {
-          const update = this.domUpdateQueue.shift();
-          try {
-            update();
-          } catch (error) {
-            console.error('Batched DOM update failed:', error);
-          }
-        }
-
-        const duration = performance.now() - startTime;
-        this.recordMetric('domUpdates', duration);
-        this.metrics.domUpdates.batched++;
-
-        this.pendingAnimationFrame = false;
-      });
-    }
-  }
-
-  /**
-   * Time a database operation
-   */
-  static async timeDBOperation(operation) {
-    const startTime = performance.now();
-    try {
-      const result = await operation();
-      const duration = performance.now() - startTime;
-      this.recordMetric('dbOperations', duration);
-      return result;
-    } catch (error) {
-      const duration = performance.now() - startTime;
-      this.recordMetric('dbOperations', duration);
-      throw error;
-    }
-  }
-
-  /**
-   * Record performance metric
-   */
-  static recordMetric(category, duration) {
-    const metric = this.metrics[category];
-    metric.total++;
-    metric.totalDuration += duration;
-    metric.avgDuration = metric.totalDuration / metric.total;
-  }
-
-  /**
-   * Get performance report
-   */
-  static getReport() {
-    return {
-      timestamp: new Date().toISOString(),
-      metrics: {
-        ...this.metrics,
-        cacheSize: this.validationCache.size,
-        queuedUpdates: this.domUpdateQueue.length
-      },
-      summary: {
-        validationCacheHitRate: this.metrics.validations.total > 0
-          ? (this.metrics.validations.cached / this.metrics.validations.total * 100).toFixed(1) + '%'
-          : 'N/A',
-        avgDBDuration: this.metrics.dbOperations.avgDuration.toFixed(2) + 'ms',
-        avgValidationDuration: this.metrics.validations.avgDuration.toFixed(2) + 'ms',
-        avgDOMUpdateDuration: this.metrics.domUpdates.avgDuration.toFixed(2) + 'ms'
-      }
-    };
-  }
-
-  /**
-   * Reset metrics
-   */
-  static resetMetrics() {
-    this.metrics = {
-      dbOperations: { total: 0, avgDuration: 0, totalDuration: 0 },
-      validations: { total: 0, cached: 0, avgDuration: 0, totalDuration: 0 },
-      domUpdates: { total: 0, batched: 0, avgDuration: 0, totalDuration: 0 }
-    };
-  }
-
-  /**
-   * Memory optimization - compress error logs periodically
-   */
-  static optimizeMemory() {
-    // Keep only last 100 entries in each error log
-    if (SafeIndexedDBOperation.errorLog.length > 100) {
-      SafeIndexedDBOperation.errorLog = SafeIndexedDBOperation.errorLog.slice(-100);
-    }
-    if (SafeDOMOperation.errorLog.length > 100) {
-      SafeDOMOperation.errorLog = SafeDOMOperation.errorLog.slice(-100);
-    }
-
-    // Prune old validation cache
-    this.pruneValidationCache();
-
-    const report = this.getReport();
-    return {
-      optimized: true,
-      cacheSize: report.metrics.cacheSize,
-      errorLogs: SafeIndexedDBOperation.errorLog.length + SafeDOMOperation.errorLog.length
-    };
-  }
-}
-
-/**
- * Optimized database operation wrapper
- */
-async function saveToDatabase_Optimized(db, data, storeName = "movies") {
-  return PerformanceOptimizer.timeDBOperation(async () => {
-    // Validate with caching
-    const items = Array.isArray(data) ? data : [data];
-    const validated = items.map(item => {
-      const validation = PerformanceOptimizer.validateWithCache(item, 'tmdb');
-      return validation.sanitized || item;
-    });
-
-    // Use SafeIndexedDBOperation
-    if (Array.isArray(data)) {
-      const result = await SafeIndexedDBOperation.writeBatch(db, storeName, validated);
-      return result.successful > 0;
-    } else {
-      return SafeIndexedDBOperation.write(db, storeName, validated[0]);
-    }
-  });
-}
-
-/**
- * Optimized DOM batch update helper
- */
-function renderCardsOptimized(records, mode = 'append') {
-  PerformanceOptimizer.batchDOMUpdate(() => {
-    // Call existing renderCard function
-    // This ensures all DOM updates happen in a single reflow/repaint
-    renderCard(records, mode);
-  });
-}
-
 /* Global Constants */
 const DEFAULT_CARD_SIZE = 300; // Default card size (px)
 
@@ -2289,75 +412,6 @@ let lastBatchLoadTime = AppState.grid.lastBatchLoadTime;  // Last batch load tim
 let BATCH_THROTTLE_INTERVAL = AppState.grid.BATCH_THROTTLE_INTERVAL;  // Batch throttle interval
 let initialJWConfig = null;  // Initial JustWatch configuration
 let previousMediaType = AppState.filters.previousMediaType;  // Previous media type
-
-/* Helper to sync AppState back to local vars when AppState is updated */
-function syncFromAppState() {
-  db = AppState.db;
-  userSettings = AppState.userSettings;
-  mediaCache = AppState.cache.media;
-  genreCache = AppState.cache.genres;
-  pageSize = AppState.grid.pageSize;
-  observer = AppState.grid.observer;
-  tooltipObserver = AppState.grid.tooltipObserver;
-  tooltipsInitialized = AppState.grid.tooltipsInitialized;
-  tooltipMouseoverHandler = AppState.grid.tooltipMouseoverHandler;
-  activeMediaType = AppState.filters.mediaType;
-  activeCountry = AppState.filters.country;
-  activeGenres = AppState.filters.activeGenres;
-  activeLists = AppState.filters.activeLists;
-  activeSearchQuery = AppState.filters.search.query;
-  searchAbortController = AppState.filters.search.abortController;
-  activeStartYear = AppState.filters.year.start;
-  activeEndYear = AppState.filters.year.end;
-  defaultStartYear = AppState.filters.year.defaultStart;
-  defaultEndYear = AppState.filters.year.defaultEnd;
-  yearSortAscending = AppState.filters.year.ascending;
-  activeMinImdb = AppState.filters.ratings.imdb.min;
-  activeMaxImdb = AppState.filters.ratings.imdb.max;
-  activeMinTmdb = AppState.filters.ratings.tmdb.min;
-  activeMaxTmdb = AppState.filters.ratings.tmdb.max;
-  activeMinMetascore = AppState.filters.ratings.metascore.min;
-  activeMaxMetascore = AppState.filters.ratings.metascore.max;
-  activeMinRT = AppState.filters.ratings.rt.min;
-  activeMaxRT = AppState.filters.ratings.rt.max;
-  ratingsInitialized = AppState.filters.ratings.initialized;
-  filteredRecords = AppState.filters.filteredRecords;
-  listsMap = Object.fromEntries(AppState.cache.lists);
-  currentSortField = AppState.filters.sortField;
-  currentSortOrder = AppState.filters.sortOrder;
-  startIndex = AppState.grid.startIndex;
-  endIndex = AppState.grid.endIndex;
-  isAtMaxSize = AppState.grid.isAtMaxSize;
-  slideshowInterval = AppState.detail.slideshowInterval;
-  currentBackdrops = AppState.detail.backdrops.list;
-  currentBackdropIndex = AppState.detail.backdrops.currentIndex;
-  notifications = AppState.cache.notifications;
-  mediaSettingsCache = AppState.cache.mediaSettings;
-  renderedMediaIDs = AppState.cache.renderedIDs;
-  allListsMeta = AppState.cache.allListsMeta;
-  customListsMeta = AppState.cache.customListsMeta;
-  videoStatusCache = AppState.cache.videoStatus;
-  closeButtonTimeout = AppState.ui.closeButtonTimeout;
-  fadeTimeout = AppState.detail.fadeTimeout;
-  activeFilter = AppState.filters.activeFilter;
-  cachedYearRangeSize = AppState.grid.cachedYearRangeSize;
-  yearRangeMin = AppState.filters.yearRangeMin;
-  yearRangeMax = AppState.filters.yearRangeMax;
-  startYearLabel = AppState.filters.startYearLabel;
-  endYearLabel = AppState.filters.endYearLabel;
-  yearSliderTrack = AppState.filters.yearSliderTrack;
-  minYear = AppState.filters.minYear;
-  maxYear = AppState.filters.maxYear;
-  isObserving = AppState.grid.isObserving;
-  letterIndex = AppState.grid.letterIndex;
-  currentJumpLetter = AppState.grid.currentJumpLetter;
-  currentJumpIndex = AppState.grid.currentJumpIndex;
-  isJumping = AppState.grid.isJumping;
-  jumpLock = AppState.grid.jumpLocked;
-  lastBatchLoadTime = AppState.grid.lastBatchLoadTime;
-  BATCH_THROTTLE_INTERVAL = AppState.grid.BATCH_THROTTLE_INTERVAL;
-  previousMediaType = AppState.filters.previousMediaType;
-}
 
 /** 
  * API related
@@ -3009,7 +1063,7 @@ function calculateChangesDateRange(lastUpdateTimestamp) {
  * @param {*} param1 
  * @returns 
  */
-async function addTitle(db, { title = null, year = null, imdb_ID = null, category = null, tmdbID = null, isRefresh = false } = {}) {
+async function addTitle(db, { title = null, year = null, imdb_ID = null, category = null, tmdbID = null, isRefresh = false, forceRefresh = false } = {}) {
   // Detect if this is part of a batch process
   const isBatchProcess = !title && imdb_ID && !isRefresh;
 
@@ -3093,11 +1147,15 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
         console.log(`Missing data for "${title}" (${missingDataStores.join(', ')})`);
         // Continue with refresh - don't return or check for changes
       }
+      // If force refresh is requested, skip changes check
+      else if (forceRefresh) {
+        showNotification(`Force refreshing "${title}"...`, true);
+        // Continue with refresh
+      }
       // Otherwise check for changes since last update
       else if (existingRecord && existingRecord.timestamp) {
         // Calculate proper date range with 14-day maximum
         const { startDate, endDate, exceededMaxRange } = calculateChangesDateRange(existingRecord.timestamp);
-
         if (exceededMaxRange) {
           // Always refresh if it's been more than 14 days
           showNotification(`Last update was more than 14 days ago. Refreshing "${title}"...`, true);
@@ -3108,7 +1166,7 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
           try {
             // Check for changes in the allowed date range
             const changesUrl = `${tmdbApiBaseUrl}${mediaType}/${tmdbID}/changes?api_key=${apiKeyManager.getTmdbKey()}&start_date=${startDate}&end_date=${endDate}`;
-            const changesResponse = await fetch(changesUrl);
+            const changesResponse = await fetch(changesUrl, { cache: 'no-cache' });
 
             if (!changesResponse.ok) {
               console.warn(`TMDB changes check failed: ${changesResponse.status}. Proceeding with refresh.`);
@@ -3144,7 +1202,7 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
 
       if (imdb_ID) {
         const lookupUrl = `${tmdbApiBaseUrl}find/${imdb_ID}?api_key=${apiKeyManager.getTmdbKey()}&external_source=imdb_id`;
-        const lookupResponse = await fetch(lookupUrl);
+        const lookupResponse = await fetch(lookupUrl, { cache: 'no-cache' });
         if (!lookupResponse.ok) throw new Error(`TMDB lookup failed: ${lookupResponse.status}`);
         const lookupData = await lookupResponse.json();
         selectedMedia = lookupData.movie_results?.[0] || lookupData.tv_results?.[0];
@@ -3155,7 +1213,7 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
       } else {
         const searchEndpoint = mediaType === 'multi' ? 'search/multi' : mediaType === 'tv' ? 'search/tv' : 'search/movie';
         const searchUrl = `${tmdbApiBaseUrl}${searchEndpoint}?api_key=${apiKeyManager.getTmdbKey()}&query=${encodeURIComponent(title)}${year ? `&year=${year}` : ""}`;
-        const searchResponse = await fetch(searchUrl);
+        const searchResponse = await fetch(searchUrl, { cache: 'no-cache' });
         if (!searchResponse.ok) throw new Error(`TMDB search failed: ${searchResponse.status}`);
         const searchData = await searchResponse.json();
         const results = searchData.results || [];
@@ -3203,7 +1261,7 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
         : "content_ratings,external_ids,aggregate_credits");
 
     const detailsUrl = `${tmdbApiBaseUrl}${selectedMediaType}/${tmdbID}?api_key=${apiKeyManager.getTmdbKey()}&append_to_response=${detailAppend}`;
-    const detailsResponse = await fetch(detailsUrl);
+    const detailsResponse = await fetch(detailsUrl, { cache: 'no-cache' });
     if (!detailsResponse.ok) throw new Error(`TMDB details fetch failed: ${detailsResponse.status}`);
 
     let tmdbData = await detailsResponse.json();
@@ -3224,10 +1282,41 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
     const storePrefix = selectedMediaType === "tv" ? "series" : "movie";
     const endpointDataMap = {};
 
-    if (tmdbData.keywords?.results || tmdbData.keywords?.keywords) {
-      const keywordsArray = tmdbData.keywords.results || tmdbData.keywords.keywords;
-      endpointDataMap[`${storePrefix}_keywords`] = transformKeywords(keywordsArray, tmdbID);
-      endpointDataMap["keywords"] = keywordsArray;
+    let keywordsArray = [];
+    if (selectedMediaType === "movie") {
+      try {
+        const keywordsUrl = `${tmdbApiBaseUrl}movie/${tmdbID}/keywords?api_key=${apiKeyManager.getTmdbKey()}`;
+        const keywordsResponse = await fetch(keywordsUrl, { cache: 'no-cache' });
+        if (keywordsResponse.ok) {
+          const keywordData = await keywordsResponse.json();
+          keywordsArray = Array.isArray(keywordData.keywords)
+            ? keywordData.keywords
+            : Array.isArray(keywordData.results)
+              ? keywordData.results
+              : [];
+        } else {
+          console.warn(`Failed to fetch dedicated keywords endpoint for movie ${tmdbID}: ${keywordsResponse.status}`);
+        }
+      } catch (error) {
+        console.warn(`Error fetching dedicated keywords for movie ${tmdbID}:`, error);
+      }
+    }
+
+    if (keywordsArray.length === 0 && tmdbData.keywords) {
+      keywordsArray = Array.isArray(tmdbData.keywords)
+        ? tmdbData.keywords
+        : Array.isArray(tmdbData.keywords?.results) && tmdbData.keywords.results.length > 0
+          ? tmdbData.keywords.results
+          : Array.isArray(tmdbData.keywords?.keywords)
+            ? tmdbData.keywords.keywords
+            : [];
+    }
+
+    if (keywordsArray.length > 0) {
+      const normalizedKeywords = renameIdsDynamically(keywordsArray, 'keyword');
+      const transformedKeywords = transformKeywords(normalizedKeywords, tmdbID);
+      endpointDataMap[`${storePrefix}_keywords`] = transformedKeywords;
+      endpointDataMap["keywords"] = normalizedKeywords;
     }
 
     // Extract personIDs for background processing
@@ -3311,7 +1400,8 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
         if (data && Object.keys(data).length > 0) {
           await saveToDatabase(db, data, storeName);
         }
-      } catch {
+      } catch (error) {
+        console.error(`addTitle failed saving ${storeName}:`, error);
         failedEndpoints.push(storeName);
       }
     }
@@ -3570,8 +1660,8 @@ function mergeTMDbAndOMDb(tmdbData, omdbData = null, releaseDatesData = null) {
 
   // Cache frequently accessed values
   const tmdbYear = isTV ? extractYear(tmdbData.first_air_date) : extractYear(tmdbData.release_date);
-  const omdbYear = omdbData?.Year || "N/A";
-  const hasTrailingDash = omdbYear !== "N/A" && /[-–-]\s*$/.test(omdbYear);
+ // const omdbYear = omdbData?.Year || "N/A";
+ // const hasTrailingDash = omdbYear !== "N/A" && /[-–-]\s*$/.test(omdbYear);
 
   // Determine title and basic metadata
   const title = omdbData?.Title || (isTV ? tmdbData.name : tmdbData.title) || "N/A";
@@ -3709,10 +1799,25 @@ function transformKeywords(keywords, tmdbID) {
   }
 
   // Transform keywords into "movie_keywords" structure
-  const mediaKeywords = keywords.map((keyword) => ({
-    tmdbID, // Associate the movie's TMDB ID
-    keywordID: keyword.keywordID || null, // Use keywordID from the existing flattened structure
-  }));
+  const mediaKeywords = keywords.map((keyword) => {
+    const keywordID = keyword.keywordID ?? keyword.id ?? keyword.keyword_id;
+    if (keywordID == null) {
+      console.warn('Skipping invalid keyword entry while transforming keywords:', keyword);
+      return null;
+    }
+
+    return {
+      tmdbID,
+      keywordID,
+    };
+  }).filter(Boolean);
+
+  if (mediaKeywords.length !== keywords.length) {
+    console.warn('Keyword transform dropped entries:', {
+      original: keywords,
+      transformed: mediaKeywords
+    });
+  }
 
   return mediaKeywords;
 }
@@ -4315,7 +2420,7 @@ async function queryOMDB(imdbID, retryCount = 0) {
   const url = `${omdbApiBaseUrl}?apikey=${apiKey}&i=${imdbID}`;
 
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { cache: 'no-cache' });
 
     // If unauthorized, mark key as invalid and retry with another key
     if (response.status === 401) {
@@ -4681,7 +2786,7 @@ async function saveToDatabase(db, data, storeName = "movies") {
       const usesInlineKeys = store.keyPath !== null;
 
       if (usesInlineKeys) {
-        // Special handling for "_credits"
+          // Special handling for "_credits"
         if (storeName.endsWith('_credits')) {
           // Compute the default (temporary) credit_id as it was assigned during migration.
           const computedCreditID = `${item.tmdbID}-${item.personID}`;
@@ -6107,6 +4212,7 @@ async function fetchAllRecords(db) {
           if (!link.imdbID) continue; // Skip invalid records
           if (!linksMap[link.imdbID]) linksMap[link.imdbID] = [];
           linksMap[link.imdbID].push(link);
+          linksMap[link.imdbID] = sortLinksByCreatedAt(linksMap[link.imdbID]);
         }
       } else if (storeName === "lists") {
         for (const listEntry of data) {
@@ -8321,10 +6427,10 @@ function generateTooltip(mediaData) {
   </a>
 </li>`;
 
-  // Add custom links only if justwatch_links setting is "all"
-  if (userSettings.justwatch_links === "all") {
+  // Add custom links according to settings
+if (userSettings.justwatchlinks !== 'stream') {
     tooltipListContent += generateCustomLinksHtml(mediaData);
-  }
+}
 
   // Add trailers if they exist (regardless of justwatch_links setting)
   if (mediaData.trailers?.length) {
@@ -10014,6 +8120,7 @@ async function deleteFromRelatedStores(db, imdbID, storeNames) {
     // Don't throw, just log the error and continue with the main deletion process
   }
 }
+
 
 /**
  * DB: Load all listStates from indexDb into cache for the current user
@@ -11823,7 +9930,7 @@ function parseReleaseDate(releaseStr) {
     // Try generic Date parsing for other formats
     const date = new Date(releaseStr);
     return !isNaN(date.getTime()) ? date : null;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -13802,13 +11909,12 @@ async function loadSeasonEpisodes(showId, seasonNumber, imdbID) {
               seasonId = currentSeason.id;
 
               // Format date as YYYY-MM-DD for TMDb API (max 14 days back)
-              const startDate = new Date(Math.max(timestamp, Date.now() - 14 * 24 * 60 * 60 * 1000))
-                .toISOString().split('T')[0];
+              const startDate = new Date(Math.max(timestamp, Date.now() - 14 * 24 * 60 * 60 * 1000)).toISOString().split('T')[0];
 
               // Check the changes endpoint
               try {
-                const changesUrl = `${tmdbApiBaseUrl}tv/season/${seasonId}/changes?api_key=${apiKeyManager.getTmdbKey()}&start_date=${startDate}`;
-                const changesResponse = await fetch(changesUrl);
+                const changesUrl = tmdbApiBaseUrl + 'tv/season/' + seasonId + '/changes?api_key=' + apiKeyManager.getTmdbKey() + '&start_date=' + startDate;
+                const changesResponse = await fetch(changesUrl, { cache: 'no-cache' });
 
                 if (changesResponse.ok) {
                   const changesData = await changesResponse.json();
@@ -14254,21 +12360,6 @@ function showCloseButton(button) {
   closeButtonTimeout = setTimeout(() => {
     button.classList.add("fade");
   }, 3600);
-}
-
-function isIOS() {
-  const ua = navigator.userAgent;
-  // Classic iOS devices
-  if (/iPad|iPhone|iPod/.test(ua)) return true;
-  // iPadOS masquerading as Mac
-  if (
-    ua.includes('Macintosh') &&
-    typeof navigator.maxTouchPoints === 'number' &&
-    navigator.maxTouchPoints > 1
-  ) {
-    return true;
-  }
-  return false;
 }
 
 async function checkVideoThumbnail(videoKey, mediaData, mediaType) {
@@ -14891,7 +12982,7 @@ async function handleDeleteMedia(_event, element) {
   }
 }
 
-async function handleRefreshMedia(_event, element) {
+async function handleRefreshMedia(_event, element, forceRefresh = false) {
   try {
     // Get both imdbID and tmdbID if available
     const { imdbID, mediaType, tmdbID } = getMediaInfo(element, 'refresh');
@@ -14904,7 +12995,8 @@ async function handleRefreshMedia(_event, element) {
       imdb_ID: imdbID, 
       tmdbID: Number(tmdbID),
       category: category,
-      isRefresh: true 
+      isRefresh: true,
+      forceRefresh: forceRefresh
     });
     
   } catch (error) {
@@ -18438,1018 +16530,533 @@ function handleAppInstalled() {
   deferredPrompt = null;
 }
 
-// ### filmy alpha code start ###
-
 /**
  * Generates HTML for custom links in tooltips
  * @param {Object} mediaData - The media data containing links
  * @returns {string} HTML string of custom links
  */
 function generateCustomLinksHtml(mediaData) {
-  let linksHtml = '';
-
-  // Add available links
-  if (mediaData.links && mediaData.links.length > 0) {
-    linksHtml = mediaData.links
-      .map(link => {
-        const details = [
-          link.version,
-          link.edition,
-          link.HDR ? "HDR" : ""
-        ]
-          .filter(Boolean)
-          .join(' ');
-
-        return `
-      <li class="url-line">
-        <a href="${link.url || link.link}" target="_blank" class="full-link">
-          <span class="resolution-link url-ttip-txt">${link.resolution || "1080p"}</span>
-             ${details ? `<span class="url-ttip-txt">${details}</span>` : ''}
-        </a>
-      </li>`;
-      })
-      .join('');
+  if (!mediaData.links || !Array.isArray(mediaData.links) || mediaData.links.length === 0) {
+    return '';
   }
 
-  return linksHtml;
+  const filterType = userSettings.justwatch_links || 'all';
+  const filteredLinks = sortLinksByCreatedAt(mediaData.links.filter(link => {
+    const type = link.type || detectLinkType(link.url || '');
+    if (filterType === 'all') return true;
+    if (filterType === 'web') return type === 'web';
+    if (filterType === 'local') return type === 'local';
+    return false;
+  }));
+
+  return filteredLinks
+    .map((link, index) => {
+      const displayText = escapeHTML(getLinkDisplayText(link, index));
+      const escapedUrl = escapeHTML(link.url || '');
+      return `
+      <li class="url-line">
+        <a href="${escapedUrl}" target="_blank" class="full-link">
+          <span class="url-ttip-txt">${displayText}</span>
+        </a>
+      </li>`;
+    })
+    .join('');
 }
-
-// --- FIELD LAYOUT AND MAPPING ---
-
-const linkFieldLayout = [
-  // [fieldKey, fieldKey, fieldKey]
-  [{ key: "url", span: 2 }, "type"], // Row 1: URL spans 2 columns, Type in 3rd
-  ["resolution", "bitDepth", "codec"],          // Row 2
-  ["source", "audio", ["HDR", "is3D"]],         // Row 3 (checkboxes together)
-  ["edition", "version", "encGroup"],           // Row 4
-  [{ key: "size", isSize: true }, "fileExt", "downloaded"], // Row 5 (Size is special)
-];
-
-const defaultUrlDict = {
-  bitDepth: ["8 Bit", "10 Bit", "12 Bit"],
-  fileExt: ["mkv", "mp4", "mov", "avi"],
-
-  resolution: [
-    "480p", "480p SD", "720p", "720p HD", "1080p", "1080p Full HD",
-    "2K", "2K Quad HD", "2160p", "2160p Ultra HD", "4K", "4K Ultra HD",
-    "6K", "6K Ultra HD", "8K", "8K Ultra HD"
-  ],
-  source: [
-    "DVD", "BluRay", "Blu-ray", "BDRip", "WEB-DL", "WEBRip", "HDRip", "HDTV", "BDRip", "AMZN", "HMAX", "IMAX"
-  ],
-  codec: ["x264", "x265", "x265 HEVC", "AVC", "VP9"
-  ],
-  encGroup: ["3XO", "AMIABLE", "afm72", "apekat", "COW", "Enthwar", "YTS", "RARBG", "EVO", "FGT", "Sampa","Tigole", "QxR", "UTR", "PSA", "r00t", "geunit", "St3amed", "KiEF", "Smurf", "HeVK", "FreetheFish", "DiN", "ADE", "TBF", "Silence", "Weasley HONE", "Kappa", "VXT"
-  ],
-  version: ["Remastered", "Restored", "Redux", "RM", "RM4K", "Intl RM4K", "Remastered Proper", "Proper", "Super-Sized", "Super Duper", "Unrated", "Uncut", "Director's Cut", "DC", "DC Roadshow", "Romero Cut", "Theatrical", "Theatrical Cut", "Final Cut", "Final Cut V2", "V2", "Open Matte", "MOC", "Umbrella", "Alternate Universe Mode", "Skynet DC", "Ultimate Cut", "The Rogue Cut", "Arrow Remastered", "REGRADED", "Remastered Extended International Cut", "Color Enhanced"
-  ],
-  edition: ["Criterion", "Steelbook", "Collector's Edition", "Anniversary Edition", "Anniv", "Deluxe Edition", "Signature Edition", "Definitive Edition", "Limited Edition", "Special Edition", "Ultimate Edition", "Gold Edition", "Platinum Edition", "Diamond Edition", "Exclusive Edition", "Extended Edition", "CE", "EE", "SE", "UE", "UCE", "Extended", "Extended Cut", "Expanded", "Fan Edition", "Noir Edition", "Black and Chrome", "Wild Thing Edition", "Ultimate Hunter", "WHC", "HMC", "SWE", "Coppola Restoration", "Signature Edition", "Ultimate Rekall", "Despecialized Edition v2.5", "UltraLight DNR v1.4 35mm","Despecialized Edition v2.0", "Special Collector's Edition", "Director's Definitive Edition"
-  ],
-  audio: [
-    "AAC", "AAC 1.0", "AAC 2.0", "AAC 5.1", "AAC 6.1", "AAC 7.1", "AC3 5.1", "FLAC", "2CH-FLAC", "FLAC 5.1", "DTS", "DTS-HD", "Dolby Digital", "Dolby Digital Plus", "Dolby TrueHD", "Dolby Atmos", "2ch", "6ch", "8ch", "Atmos", "TrueHD", "DDP"
-  ],
-  type: ["local", "stream", "web"]
-};
-
-const linkFieldMap = {
-  url: { label: "URL", type: "url", required: true },
-  type: { label: "Type", type: "select", options: defaultUrlDict.type },
-  resolution: { label: "Resolution", type: "select", options: defaultUrlDict.resolution },
-  bitDepth: { label: "Bit Depth", type: "select", options: defaultUrlDict.bitDepth },
-  codec: { label: "Codec", type: "select", options: defaultUrlDict.codec },
-  source: { label: "Source", type: "select", options: defaultUrlDict.source },
-  audio: { label: "Audio", type: "select", options: defaultUrlDict.audio },
-  HDR: { label: "HDR", type: "checkbox" },
-  is3D: { label: "3D", type: "checkbox" },
-  edition: { label: "Edition", type: "select", options: defaultUrlDict.edition },
-  version: { label: "Version", type: "select", options: defaultUrlDict.version },
-  encGroup: { label: "Group", type: "select", options: defaultUrlDict.encGroup },
-  size: { label: "Size", type: "number" },
-  fileExt: { label: "File Ext", type: "select", options: defaultUrlDict.fileExt },
-  downloaded: { label: "Downloaded", type: "checkbox" }
-};
 
 // --- MAIN LINK FUNCTION ---
 
-async function showLinkEditorDialog(imdbID, mediaTitle = "") {
-  // Load all links for this imdbID
-  const links = await new Promise((resolve, reject) => {
+function detectLinkType(url) {
+  if (!url || typeof url !== 'string') return 'web';
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) return 'web';
+  if (/^(smb:|file:|ftp:|ftps:)/i.test(trimmed)) return 'local';
+  return 'web';
+}
+
+function getLinkDisplayText(link, index) {
+  const text = (link.linkText || '').trim();
+  return text || `Link ${index + 1}`;
+}
+
+function sortLinksByCreatedAt(links) {
+  return [...links].sort((a, b) => {
+    const aTime = Number(a?.createdAt || 0);
+    const bTime = Number(b?.createdAt || 0);
+    if (aTime !== bTime) return aTime - bTime;
+    return ((a.linkText || '').trim()).localeCompare(
+      ((b.linkText || '').trim()),
+      undefined,
+      { numeric: true, sensitivity: 'base' }
+    );
+  });
+}
+
+async function showLinkEditor(imdbID, mediaTitle = "") {
+  const links = await (async () => {
     const tx = db.transaction('links', 'readonly');
     const store = tx.objectStore('links');
     let index;
-    try { index = store.index('imdbID'); }
-    catch {
-      const req = store.getAll();
-      req.onsuccess = () => resolve(req.result.filter(l => l.imdbID === imdbID));
-      req.onerror = () => reject(req.error);
-      return;
+    try {
+      index = store.index('imdbID');
+    } catch {
+      return new Promise((resolve, reject) => {
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const allLinks = req.result || [];
+          resolve(sortLinksByCreatedAt(allLinks.filter(l => l.imdbID === imdbID).map(link => ({
+            imdbID,
+            url: link.url || '',
+            linkText: link.linkText || '',
+            type: link.type || detectLinkType(link.url || ''),
+            createdAt: link.createdAt || 0
+          }))));
+        };
+        req.onerror = () => reject(req.error);
+      });
     }
-    const req = index.getAll(imdbID);
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
 
-  // Add a blank link for "Add New"
-  links.push({
-    imdbID, url: "", type: "web", source: "", resolution: "1080p", bitDepth: "10 Bit", codec: "",
-    fileExt: "", encGroup: "", size: "", sizeUnit: "GB", downloaded: false, HDR: false, is3D: false,
-    edition: "", audio: "", version: ""
-  });
+    return new Promise((resolve, reject) => {
+      const req = index.getAll(imdbID);
+      req.onsuccess = () => {
+        const results = req.result || [];
+        resolve(sortLinksByCreatedAt(results.map(link => ({
+          imdbID,
+          url: link.url || '',
+          linkText: link.linkText || '',
+          type: link.type || detectLinkType(link.url || ''),
+          createdAt: link.createdAt || 0
+        }))));
+      };
+      req.onerror = () => reject(req.error);
+    });
+  })();
 
-  let page = 0;
+  function isValidLinkUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    return /^https?:\/\//i.test(trimmed) || /^(smb:|file:|ftp:|ftps:)/i.test(trimmed);
+  }
+
+  async function saveLinkEntry(link, oldLink = null) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['links'], 'readwrite');
+      const store = tx.objectStore('links');
+
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error || new Error('Transaction error'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+
+      if (oldLink && (oldLink.url !== link.url || oldLink.type !== link.type)) {
+        store.delete([imdbID, oldLink.type || 'web', oldLink.url]);
+      }
+
+      store.put({
+        imdbID,
+        url: link.url,
+        linkText: link.linkText || getLinkDisplayText(link, 0),
+        type: link.type,
+        createdAt: link.createdAt || Date.now()
+      });
+    });
+  }
+
+  async function deleteLinkEntry(link) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['links'], 'readwrite');
+      const store = tx.objectStore('links');
+      const req = store.delete([imdbID, link.type || 'web', link.url]);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  function renderRows() {
+    if (!links.length) {
+        return `<div class="link-row no-links">No links added yet.</div>`;
+      }
+
+      return links.map((link, index) => {
+        const displayText = escapeHTML(getLinkDisplayText(link, index));
+        const escapedUrl = escapeHTML(link.url || '');
+        const urlPlaceholder = link.url ? '' : 'https://example.com';
+        const textPlaceholder = link.linkText ? '' : `Link ${index + 1}`;
+        return `
+        <div class="link-row" data-row="${index}">
+          <div class="editable-cell url-cell">
+            <a href="${escapedUrl || '#'}" target="_blank" rel="noopener noreferrer" class="link-icon" title="Open link">
+              <svg class="icon-svg"><use href="#link" /></svg>
+            </a>
+            <span class="editable-field editable-url" data-field="url" data-row="${index}" data-placeholder="${urlPlaceholder}">${escapedUrl}</span>
+          </div>
+          <div class="editable-cell text-cell">
+            <span class="editable-field editable-text" data-field="text" data-row="${index}" data-placeholder="${textPlaceholder}">${displayText}</span>
+          </div>
+          <div class="delete-cell">
+            <button type="button" class="popup-button delete delete-link" data-row="${index}" title="Delete link">
+              <svg class="icon-svg"><use href="#trash" /></svg>
+            </button>
+          </div>
+        </div>`;
+      }).join('');
+  }
+
+  function getMediaType() {
+    const mediaCard = document.querySelector(`.media-card[data-imdbid="${imdbID}"]`);
+    return mediaCard ? mediaCard.dataset.mediaType : 'movie';
+  }
+
+  async function refreshTooltips() {
+    const mediaType = getMediaType();
+    await updateCache(imdbID, db, mediaType);
+    refreshUrlLinksInTooltips([imdbID]);
+  }
 
   function render() {
-    const link = links[page];
-    const isNew = !link.url;
-
-    // Default size unit fallback
-    if (!link.sizeUnit) link.sizeUnit = "GB";
-
-    let html = `
+    const html = `
       <div class="import-dialog">
         <div class="link-editor-header">
-          <div class="pagination-indicator">${page + 1} / ${links.length}</div>
-          <div class="title-navigation">
-            <button type="button" class="arrow-btn nav-left" ${page === 0 ? "disabled" : ""} title="Previous">&#x25C0;</button>
-            <h3>${mediaTitle}</h3>
-            <button type="button" class="arrow-btn nav-right" ${page === links.length - 1 ? "disabled" : ""} title="Next">&#x25B6;</button>
+          <h3>${escapeHTML(mediaTitle || 'Links')}</h3>
+        </div>
+        <div class="link-table-container">
+          <div class="link-editor-table">
+            <div class="link-table-body">
+              ${renderRows()}
+            </div>
+          </div>
+          <div class="link-editor-actions">
+            <button type="button" class="popup-button btn-add-link">Add Link</button>
           </div>
         </div>
-        <form class="link-editor-form" autocomplete="off">
-          <div class="link-editor-grid">
-            ${linkFieldLayout.map(row =>
-      row.map(field => {
-        if (!field) return `<div></div>`;
-        // Special: URL field spanning two columns
-        if (typeof field === "object" && field.key === "url") {
-          const f = linkFieldMap.url;
-          return `<div class="field-row url-field">
-                    <label>
-                        <span class="field-label">
-                        ${link.url
-              ? `<a href="${link.url}" target="_blank" rel="noopener noreferrer" title="Open link">${f.label} 🔗</a>`
-              : f.label}
-                      </span>  
-                      <input class="popup-input" type="url" name="url" value="${link.url ?? ""}" required>
-                    </label>
-                  </div>`;
-        }
-        // Special: Size field (number input + unit dropdown)
-        if (typeof field === "object" && field.isSize) {
-          // Inline split "4.44 GB" or "700 MB" etc
-          let sizeValue = "", sizeUnit = "GB";
-          if (link.size) {
-            const match = String(link.size).match(/^([\d.]+)\s*([A-Za-z]+)$/);
-            if (match) {
-              sizeValue = match[1];
-              sizeUnit = match[2];
-            }
-          } else if (link.sizeUnit) {
-            sizeUnit = link.sizeUnit;
-          }
-          return `<div class="field-row size-field">
-            <label>
-              <span class="field-label">Size</span>
-              <div class="size-inputs">
-                <input class="popup-input size-value" type="number" name="size" min="0" step="0.01" value="${sizeValue}">
-                <select class="popup-input size-unit" name="sizeUnit">
-                  <option value="MB"${sizeUnit === "MB" ? " selected" : ""}>MB</option>
-                  <option value="GB"${sizeUnit === "GB" ? " selected" : ""}>GB</option>
-                </select>
-              </div>
-            </label>
-          </div>`;
-        }
-        // Checkboxes together
-        if (Array.isArray(field)) {
-          return `<div class="checkbox-group">
-                    ${field.map(f =>
-            `<label class="title-checkbox">
-                        <span class="title-text">${linkFieldMap[f].label}</span>
-                        <input type="checkbox" name="${f}" ${link[f] ? "checked" : ""}>
-                      </label>`
-          ).join("")}
-                  </div>`;
-        }
-        const f = linkFieldMap[field];
-        if (f.type === "checkbox") {
-          return `<div class="field-row checkbox-field">
-                    <label class="title-checkbox">
-                    <span class="title-text">${f.label}</span>
-                    <input type="checkbox" name="${field}" ${link[field] ? "checked" : ""}>
-                    </label>
-                  </div>`;
-        }
-        if (f.type === "select") {
-          return `<div class="field-row select-field">
-                    <label>
-                      <span class="field-label">${f.label}</span>
-                      <select class="popup-input" name="${field}">
-                        <option value=""></option>
-                        ${f.options.map(opt => `<option value="${opt}"${link[field] === opt ? " selected" : ""}>${opt}</option>`).join("")}
-                      </select>
-                    </label>
-                  </div>`;
-        }
-        // Text input
-        return `<div class="field-row">
-                  <label>
-                    <span class="field-label">${f.label}</span>
-                    <input class="popup-input" type="${f.type}" name="${field}" value="${link[field] ?? ""}" ${f.required ? "required" : ""}>
-                  </label>
-                </div>`;
-      }).join("")
-    ).join("")}
-          </div>
-          <div class="form-actions">
-            ${!isNew ? `<button type="button" class="popup-button delete" data-action="delete-link"><svg class="icon-svg"><use href="#trash" /></svg></button>` : `<div></div>`}
-            <button type="submit" class="popup-button btn-save">${isNew ? "Add" : "Save"}</button>
-          </div>
-        </form>
       </div>
       <style>
         .import-dialog {
-          max-width: 700px;
+          width: min(100%, 760px);
+          max-width: 760px;
         }
+
         .link-editor-header {
-          margin-bottom: 0px;
-        }
-        .pagination-indicator {
-          text-align: center;
-          margin-bottom: 4px;
-          color: var(--text-color-header, #999);
-          font-size: 0.75rem;
-          font-weight: bold;
-        }
-        .title-navigation {
           display: flex;
-          align-items: center;
-          justify-content: space-between;
+          justify-content: center;
+          margin-bottom: 16px;
         }
-        .title-navigation h3 {
-          flex: 1;
-          text-align: center;
+
+        .link-editor-header h3 {
           margin: 0;
-          color: whitesmoke;
+          font-size: 1.2rem;
+          text-align: center;
         }
-        .link-editor-grid {
+
+        .link-editor-actions {
+          display: flex;
+          justify-content: center;
+          margin-top: 14px;
+        }
+
+        .link-editor-actions .btn-add-link {
+          min-width: 140px;
+          padding: 10px 16px;
+        }
+
+        .link-table-container {
+          width: 100%;
+          max-height: 340px;
+          overflow-y: auto;
+          overflow-x: hidden;
+          box-sizing: border-box;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 10px;
+          padding: 4px;
+          background: rgba(0, 0, 0, 0.08);
+        }
+
+        .link-editor-table {
+          width: 100%;
+          max-width: 100%;
+          display: block;
+          box-sizing: border-box;
+        }
+
+        .link-table-body {
           display: grid;
-          grid-template-columns: 1fr 1fr 1fr;
+          gap: 0;
+        }
+
+        .link-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 40px;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 6px;
+          min-width: 0;
+          box-sizing: border-box;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .link-row.no-links {
+          grid-template-columns: 1fr;
+          justify-items: center;
+          padding: 16px;
+          color: var(--text-color-header, #aaa);
+        }
+
+        .editable-cell,
+        .url-cell,
+        .text-cell {
+          min-width: 0;
+        }
+
+        .url-cell {
+          display: flex;
+          align-items: center;
           gap: 8px;
+          overflow: hidden;
         }
-        .field-row {
-          display: flex;
+
+        .text-cell {
+          overflow: hidden;
+        }
+
+        .delete-cell {
+          width: 40px;
+          text-align: right;
+          padding-right: 6px;
+        }
+
+        .link-icon {
+          display: inline-flex;
           align-items: center;
-        }
-        .field-row label {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          width: 100%;
-        }
-        .field-label {
-          min-width: 70px;
-        }
-        .url-field {
-          grid-column: 1 / 3;
-        }
-        .popup-input {
-          width: 100%;
-        }
-        .size-inputs {
-          display: flex;
-          gap: 8px;
-        }
-        .size-value {
-          width: 70px;
-        }
-        .size-unit {
-          width: 60px;
-        }
-        .checkbox-group {
-          display: flex;
-          gap: 14px;
-          align-items: center;
-        }
-        .title-checkbox {
-          margin-bottom: 0;
-          display: flex;
-          align-items: center;
-          gap: 4px;
-        }
-        .checkbox-field {
-        }
-        .form-actions {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-top: 18px;
-        }
-        .btn-save {
-          min-width: 100px;
-        }
-        .icon-svg {
-          width: 1em;
-          height: 1em;
+          justify-content: center;
+          flex-shrink: 0;
+          margin-right: 8px;
           vertical-align: middle;
+          color: var(--highlight-color3, #00bcff);
         }
-        .arrow-btn {
-          background: none !important;
-          border: none;
-          color: #aaa;
-          font-size: 1.8em;
-          padding: 0 10px;
-          cursor: pointer;
-          transition: color 0.15s;
+
+        .editable-field {
+          display: block;
+          min-width: 0;
+          box-sizing: border-box;
+          cursor: text;
+          color: inherit;
         }
-        .arrow-btn:disabled {
-          color: #444;
+
+        .editable-field:hover {
+          opacity: 0.85;
+        }
+
+        .editable-url,
+        .inline-edit-url {
+          flex: 1 1 auto;
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+          font-size: 0.82rem;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .editable-text,
+        .inline-edit-text {
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+          font-size: 0.82rem;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .editable-url,
+        .editable-text {
+          height: 30px;
+          line-height: 30px;
+          padding: 0 8px;
+        }
+
+        .inline-edit {
+          display: block;
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+          height: 30px;
+          line-height: 28px;
+          box-sizing: border-box;
+          margin: 0;
+          padding: 0 8px;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          border-radius: 6px;
+          background: var(--popup-background, #111);
+          color: inherit;
+          outline: none;
+          font-size: 0.82rem;
+        }
+
+        .delete-link {
+          width: 24px !important;
+          min-width: 24px !important;
+          height: 24px;
+          padding: 0 !important;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 6px;
+        }
+
+        .delete-link svg {
+          width: 16px;
+          height: 16px;
+        }
+
+        .editable-url:empty::before,
+        .editable-text:empty::before {
+          content: attr(data-placeholder);
+          color: rgba(255, 255, 255, 0.5);
+        }
+
+        .popup-button.btn-save:disabled {
+          opacity: 0.5;
           cursor: not-allowed;
         }
-        .arrow-btn:hover:not(:disabled) {
-          color: var(--highlight-color3, #00bcff);
+
+        .no-links {
+          padding: 16px;
+          text-align: center;
+          color: var(--text-color-header, #aaa);
         }
       </style>
     `;
 
     showPopup('edit-link', html, {
       listeners: {
-        '.nav-left': { click: () => { if (page > 0) { page--; render(); } } },
-        '.nav-right': { click: () => { if (page < links.length - 1) { page++; render(); } } },
-        '[data-action="delete-link"]': {
-          click: async () => {
-            const linkToDelete = links[page];
-            const displayUrl = linkToDelete.url.length > 40 ? linkToDelete.url.substring(0, 37) + '...' : linkToDelete.url;
-            
-            const confirmed = await showCustomConfirm(`Delete link for "${mediaTitle}"?<br><span style="font-size: 0.8em; color: #aaa;">${displayUrl}</span>`);
-            
-            if (confirmed) {
-              const tx = db.transaction('links', 'readwrite');
-              const store = tx.objectStore('links');
-              
-              // Use the exact type from the link object
-              const linkType = linkToDelete.type === undefined || linkToDelete.type === null ? "" : linkToDelete.type;
-              
-              // Log the key we're trying to delete for debugging
-              console.log(`Deleting link with key: [${linkToDelete.imdbID}, ${linkType}, ${linkToDelete.url}]`);
-              
-              store.delete([linkToDelete.imdbID, linkType, linkToDelete.url]);
-              
-              tx.oncomplete = () => {
-                showNotification('Link deleted.', false);
-                
-                // Get the media type from the card's data attribute
-                const mediaCard = document.querySelector(`.media-card[data-imdbid="${imdbID}"]`);
-                const mediaType = mediaCard ? mediaCard.dataset.mediaType : 'movie';
-                
-                // Update cache and refresh tooltip
-                updateCache(imdbID, db, mediaType).then(() => {
-                  refreshUrlLinksInTooltips([imdbID]);
-                  closePopup('edit-link');
-                });
-              };
-              
-              tx.onerror = (e) => {
-                console.error("Error deleting link:", e.target.error);
-                showNotification('Failed to delete link.', false);
-              };
-            }
+        '.btn-add-link': {
+          click: function () {
+          links.push({
+            imdbID,
+            url: '',
+            linkText: '',
+            type: 'web',
+            createdAt: Date.now()
+          });
+            render();
           }
         },
-        'form': {
-          submit: function (e) {
-            e.preventDefault();
-            const form = e.target;
-            const newLink = { imdbID };
-            
-            // FIXED: Always set a default type of "web" first
-            newLink.type = "web";
-            
-            Object.keys(linkFieldMap).forEach(f => {
-              if (linkFieldMap[f].type === "checkbox") {
-                newLink[f] = form[f].checked;
-              } else if (f === "size") {
-                newLink[f] = form[f].value && form.sizeUnit.value
-                  ? `${form[f].value} ${form.sizeUnit.value}`
-                  : "";
-              } else if (f === "type") {
-                // If type field exists and has a non-empty value, use it
-                if (form[f] && form[f].value && form[f].value.trim() !== "") {
-                  newLink[f] = form[f].value.trim();
-                }
-                // Otherwise keep the default "web" we set earlier
-              } else {
-                newLink[f] = form[f].value.trim();
+        '.link-table-body': {
+          click: async function (e) {
+            const deleteButton = e.target.closest('.delete-link');
+            if (deleteButton) {
+              const row = Number(deleteButton.dataset.row);
+              const linkToDelete = links[row];
+              if (!linkToDelete) return;
+              const linkLabel = getLinkDisplayText(linkToDelete, row);
+              const confirmed = await showCustomConfirm(
+                `Delete link "${escapeHTML(linkLabel)}" from<br><strong>${escapeHTML(mediaTitle)}</strong>?` +
+                `<br><span style="font-size: 0.8em; color: #aaa;">${escapeHTML(linkToDelete.url || '')}</span>`
+              );
+              if (!confirmed) return;
+              try {
+                if (linkToDelete.url) await deleteLinkEntry(linkToDelete);
+                links.splice(row, 1);
+                render();
+                await refreshTooltips();
+                showNotification('Link deleted.', false);
+              } catch (error) {
+                console.error('Failed to delete link:', error);
+                showNotification('Failed to delete link.', false);
               }
-            });
-            
-            // FIXED: Double-check that type is never empty
-            if (!newLink.type || newLink.type === "") {
-              newLink.type = "web";
+              return;
             }
-            
-            const tx = db.transaction('links', 'readwrite');
-            const store = tx.objectStore('links');
-            
-            // Log the link we're saving for debugging
-            console.log("Saving link:", newLink);
-            
-            store.put(newLink);
-            tx.oncomplete = () => {
-              closePopup('edit-link');
-              showNotification("Link saved.", false);
-              
-              // Get the media type from the card's data attribute
-              const mediaCard = document.querySelector(`.media-card[data-imdbid="${imdbID}"]`);
-              const mediaType = mediaCard ? mediaCard.dataset.mediaType : 'movie';
-              
-              // Update cache and refresh tooltip
-              updateCache(imdbID, db, mediaType).then(() => {
-                refreshUrlLinksInTooltips([imdbID]);
-              });
-            };
-            tx.onerror = (e) => {
-              console.error("Error saving link:", e.target.error);
-              showNotification("Failed to save link.", false);
-            };
+
+            const editable = e.target.closest('.editable-field');
+            if (!editable) return;
+            if (editable.querySelector('input')) return;
+            const field = editable.dataset.field;
+            const rowIndex = Number(editable.dataset.row);
+            const currentValue = field === 'text'
+              ? getLinkDisplayText(links[rowIndex], rowIndex)
+              : links[rowIndex]?.url || '';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = `inline-edit inline-edit-${field}`;
+            input.value = currentValue;
+            input.dataset.field = field;
+            input.dataset.row = rowIndex;
+            editable.textContent = '';
+            editable.appendChild(input);
+            input.focus();
+            input.select();
+          },
+          focusout: async function (e) {
+            if (e.target.matches('.inline-edit')) {
+              const input = e.target;
+              const rowIndex = Number(input.dataset.row);
+              const field = input.dataset.field;
+              const newValue = input.value.trim();
+              const originalLink = links[rowIndex];
+              if (!originalLink) return;
+
+              if (field === 'url') {
+                if (!newValue) {
+                  links[rowIndex] = {
+                    ...originalLink,
+                    url: '',
+                    type: 'web'
+                  };
+                  render();
+                  return;
+                }
+                if (!isValidLinkUrl(newValue)) {
+                  showNotification('Invalid URL. Changes were not saved.', false);
+                  render();
+                  return;
+                }
+              }
+
+              const updatedLink = {
+                ...originalLink,
+                url: field === 'url' ? newValue : originalLink.url,
+                linkText: field === 'text' ? newValue : originalLink.linkText,
+              };
+              updatedLink.type = detectLinkType(updatedLink.url);
+              updatedLink.linkText = updatedLink.linkText.trim() || getLinkDisplayText(updatedLink, rowIndex);
+
+              try {
+                if (updatedLink.url) {
+                  await saveLinkEntry(updatedLink, originalLink);
+                }
+                links[rowIndex] = {
+                  imdbID,
+                  url: updatedLink.url,
+                  linkText: updatedLink.linkText,
+                  type: updatedLink.type
+                };
+                render();
+                if (updatedLink.url) await refreshTooltips();
+              } catch (error) {
+                console.error('Failed to save link edit:', error);
+                showNotification('Failed to save link changes.', false);
+                render();
+              }
+            }
+          },
+          keydown: async function (e) {
+            if (!e.target.matches('.inline-edit')) return;
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.target.blur();
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              render();
+            }
           }
         }
       }
     });
-
-    setTimeout(() => {
-      const firstInput = document.querySelector('.link-editor-form input:not([type=checkbox]), .link-editor-form select');
-      if (firstInput) firstInput.focus();
-    }, 0);
-
   }
+
   render();
-}
-
-async function processDataFromJSON(dataArray, db) {
-    // Track which movies were processed to update tooltips at the end
-    const processedImdbIDs = new Set();
-    
-    for (const record of dataArray) {
-        const { datatitle, url } = record;
-
-        // Parse datatitle to extract metadata (title, year, etc.)
-        const parsedData = await parseDataTitle(datatitle, db);
-        if (!parsedData || !parsedData.title || !parsedData.year) {
-            console.warn(`Failed to parse datatitle: "${datatitle}"`);
-            continue;
-        }
-
-        const normalizedDataTitle = normalizeString(`${parsedData.title} ${parsedData.year}`);
-        const normalizedTitle = normalizeString(parsedData.title);
-        const parsedYear = parsedData.year;
-
-        // Step 1: Try exact match in IndexedDB
-        let existingMovie = await getMovieByDataTitle(normalizedDataTitle, db);
-
-        // Step 2: Fallback to filtered fuzzy matching
-        if (!existingMovie) {
-            existingMovie = await fuzzyMatchMovieByFilters(
-                normalizedTitle,
-                parsedYear,
-                db
-            );
-        }
-
-        if (existingMovie) {
-            console.log(
-                `Parsed Movie "${parsedData.title}" (${parsedYear}) matched with existing movie: "${existingMovie.Title}" (${existingMovie.Year}). Checking Links...`
-            );
-
-            // Add the URL to links store
-            await addUrlToLinksStore(
-                existingMovie.imdbID,
-                url,
-                { ...parsedData, type: parsedData.type || "web" },
-                db
-            );
-            
-            // Track this movie for tooltip update
-            processedImdbIDs.add(existingMovie.imdbID);
-
-        } else {
-            console.log(`Movie "${parsedData.title}" (${parsedData.year}) not found. Querying TMDb...`);
-
-            // Query TMDb for missing movie details - now returns imdbID directly
-            const newImdbID = await addTitle(db, {
-                title: parsedData.title,
-                year: parsedData.year
-            });
-
-            if (newImdbID) {
-                console.log(`Fetched TMDb details for "${parsedData.title}" (${parsedYear}). Adding URL...`);
-
-                // Add URL to the "links" store
-                await addUrlToLinksStore(
-                    newImdbID,
-                    url,
-                    { ...parsedData, type: parsedData.type || "web" },
-                    db
-                );
-                
-                // Track this movie for tooltip update
-                processedImdbIDs.add(newImdbID);
-
-            } else {
-                console.warn(`Failed to fetch details from TMDb for movie: "${parsedData.title}" (${parsedYear})`);
-            }
-        }
-    }
-    
-    // Refresh URL links in tooltips for all processed movies
-    if (processedImdbIDs.size > 0) {
-        refreshUrlLinksInTooltips(Array.from(processedImdbIDs));
-    }
-    
-    console.log(`Processed ${dataArray.length} items, updated ${processedImdbIDs.size} movies`);
-}
-
-/**
- * Parse dataTitle and ensure valid output.
- * @param {string} dataTitle - The raw data-title string.
- * @returns {Object|null} - Parsed movie data or null if parsing failed.
- */
-function parseDataTitle(dataTitle) {
-    if (!dataTitle || typeof dataTitle !== "string") {
-        console.warn(`Invalid dataTitle: "${dataTitle}"`);
-        return null;
-    }
-
-    console.log(`Parsing movie title: "${dataTitle}"`);
-
-    const metadata = {
-        bitDepth: "",
-        HDR: false,
-        is3D: false,
-        resolution: "",
-        source: "",
-        codec: "",
-        encGroup: "",
-        audio: "",
-        version: "",
-        edition: "",
-        fileExt: "",
-        size: "",
-        unmatchedString: "",
-        matchedTerms: [],
-    };
-
-    // Normalize underscores to spaces
-    let normalizedDataTitle = dataTitle.replace(/_/g, " ");
-
-    // Split at resolution using urlDict
-    const resolutionTerms = defaultUrlDict.resolution
-        .map((term) => term.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const resolutionRegex = new RegExp(`(?:^|[^a-zA-Z0-9])(${resolutionTerms.join("|")})(?:[^a-zA-Z0-9]|$)`, "i");
-
-    const resolutionMatch = normalizedDataTitle.match(resolutionRegex);
-
-    let leftPart = normalizedDataTitle; // Default to entire string if no resolution is found
-    let rightPart = "";
-
-    if (resolutionMatch) {
-        const resolutionIndex = resolutionMatch.index;
-        metadata.resolution = resolutionMatch[1]; // Extract resolution
-        leftPart = normalizedDataTitle.slice(0, resolutionIndex).trim();
-        rightPart = normalizedDataTitle.slice(resolutionIndex).trim();
-    }
-
-    // Extract year from left part (rightmost 4-digit number)
-
-    const yearRegex = /\b(\d{4})\b/g;
-    const yearMatches = [...leftPart.matchAll(yearRegex)]; // Match all 4-digit numbers
-
-    let year = null;
-    if (yearMatches.length > 0) {
-        year = yearMatches[yearMatches.length - 1][1]; // Extract the last match
-        metadata.year = year; // Assign the parsed year to metadata
-
-        // Remove only the rightmost occurrence of the year
-        leftPart = leftPart.replace(new RegExp(`\\b${year}\\b(?!.*\\b${year}\\b)`, "g"), "").trim();
-
-        // Clean up any remaining empty parentheses
-        leftPart = leftPart.replace(/\(\s*\)/g, "").trim();
-    }
-
-    // Step 2: Handle dots intelligently
-    leftPart = leftPart
-        // Remove dots in abbreviations like "O.J.", "P.S.", etc.
-        .replace(/\b([A-Za-z])\.(?=[A-Za-z]\.)/g, "$1") // Removes dots in abbreviations
-        // Replace other dots with spaces
-        .replace(/\./g, " ") // Converts "Indiana.Jones" to "Indiana Jones"
-        //.replace(/[.:\-]/g, "").trim();  // Remove ".", ":", and "-" from leftPart for title integrity
-        .replace(/(?<!\d):|:(?!\d)/g, "") // Remove colons not surrounded by digits
-        .replace(/[.]/g, "").trim();  // Remove "."
-
-    // Clean up leftPart by removing parentheses and their content
-    leftPart = leftPart
-        .replace(/\(\s*\)/g, "") // Remove empty parentheses
-        .replace(/\s+/g, " ") // Collapse multiple spaces
-        .trim();
-
-    // Regex for matching cardinal numbers followed by "Anniv", "Anniversary", or "Anniversary Edition"
-    //const annivRegex = /\b(\d+(?:st|nd|rd|th)?\s+(Anniv|Anniversary|Anniversary Edition))\b/i;
-    const annivRegex = /\b(\d+(?:st|nd|rd|th)?)\s+(Anniv|Anniversary|Anniversary Edition)\b/i;
-
-    // Match and process "Anniv" terms
-    let annivMatch;
-
-    while ((annivMatch = annivRegex.exec(leftPart)) !== null) {
-        const matchedTerm = annivMatch[1];
-        metadata.edition = metadata.edition
-            ? `${metadata.edition}, ${matchedTerm}` // Append if multiple editions are found
-            : matchedTerm;
-
-        // Remove the matched term from leftPart
-        leftPart = leftPart.replace(new RegExp(`\\b${matchedTerm}\\b`, "gi"), " ").replace(/\s+/g, " ").trim();
-    }
-
-    // Sort version/edition terms by length for better matching
-    const sortedEditionTerms = [...defaultUrlDict.edition].sort((a, b) => b.length - a.length);
-    const sortedVersionTerms = [...defaultUrlDict.version].sort((a, b) => b.length - a.length);
-
-    // Regex for matching version, edition, and source terms
-    const editionVersionSourceTerms = sortedEditionTerms
-        .concat(sortedVersionTerms)
-        .concat(defaultUrlDict.source) // Include source terms
-        .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); // Escape special characters
-
-    const editionVersionSourceRegex = new RegExp(`\\b(${editionVersionSourceTerms.join("|")})\\b`, "gi");
-
-    // Collect all matches from leftPart
-    const matchedLeftTerms = [...leftPart.matchAll(editionVersionSourceRegex)].map((match) => match[1]);
-
-    // Process each matched term
-    matchedLeftTerms.forEach((term) => {
-        if (sortedEditionTerms.includes(term)) {
-            metadata.edition = metadata.edition
-                ? `${metadata.edition}, ${term}` // Append if multiple editions are found
-                : term;
-        } else if (sortedVersionTerms.includes(term)) {
-            metadata.version = metadata.version
-                ? `${metadata.version}, ${term}` // Append if multiple versions are found
-                : term;
-        } else if (defaultUrlDict.source.includes(term)) {
-            metadata.source = metadata.source
-                ? `${metadata.source}, ${term}` // Append if multiple sources are found
-                : term;
-        }
-
-        // Remove the matched term from leftPart
-        leftPart = leftPart.replace(new RegExp(`\\b${term}\\b`, "gi"), " ").replace(/\s+/g, " ").trim();
-    });
-
-    // Step 7: Treat remaining left part as title
-    let title = leftPart.trim();
-
-    // Remove trailing junk like " ()"
-    //title = title.replace(/\(\)/g, "").trim();
-    title = title.replace(/\(\s*\)/g, "").trim();
-
-    // RIGHT PART: Preserve specific patterns before normalization
-    metadata.unmatchedString = rightPart.replace(/\b(\w+)\.(\d+\.\d+)\b/gi, "$1 $2"); // Convert "AAC.5.1" to "AAC 5.1"
-
-    // Match file size
-    const sizeRegex = /\b(\d+(?:\.\d+)?\s*(GB|MB|TB))\b/i;
-    const sizeMatch = metadata.unmatchedString.match(sizeRegex);
-
-    if (sizeMatch) {
-        metadata.size = sizeMatch[0];
-        metadata.unmatchedString = metadata.unmatchedString.replace(sizeMatch[0], "").trim();
-    }
-
-    // Match file extension (e.g., ".mkv")
-    const fileExtRegex = /\.(\w+)(?=\s*\(|$)/i;
-    const fileExtMatch = metadata.unmatchedString.match(fileExtRegex);
-
-    if (fileExtMatch) {
-        metadata.fileExt = fileExtMatch[1];
-        metadata.unmatchedString = metadata.unmatchedString.replace(fileExtMatch[0], "").trim();
-    }
-
-    // Replace dots with spaces after codec terms
-    const codecTerms = defaultUrlDict.codec;
-    codecTerms.forEach(codec => {
-        const codecRegex = new RegExp(`\\b${codec}\\.`, 'gi');
-        metadata.unmatchedString = metadata.unmatchedString.replace(codecRegex, `${codec} `);
-    });
-
-    // Normalize urlDict for matching
-    const normalizedUrlDict = {};
-    Object.keys(defaultUrlDict).forEach((key) => {
-        normalizedUrlDict[key] = defaultUrlDict[key]
-            .map((term) => term.toLowerCase().trim()) // Normalize urlDict terms
-            .sort((a, b) => b.length - a.length); // Sort by length to match longer terms first
-    });
-
-    // Generate combined regex for urlDict terms
-    const combinedPattern = Object.values(normalizedUrlDict)
-        .flat()
-        .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) // Escape special characters
-        .join("|");
-
-    const knownTermsRegex = new RegExp(`\\b(${combinedPattern})\\b`, "gi");
-    // const knownTermsRegex = new RegExp(`\\b(${combinedPattern.replace(/\\\./g, "\\.?")})\\b`, "gi");
-
-    // Match known terms from urlDict
-    const matchedTerms = [...metadata.unmatchedString.matchAll(knownTermsRegex)].map((match) => match[0]);
-
-    matchedTerms.forEach((term) => {
-        for (const [field, terms] of Object.entries(normalizedUrlDict)) {
-            if (terms.includes(term.toLowerCase())) {
-                metadata[field] = term; // Assign matched term to its corresponding metadata field
-                break;
-            }
-        }
-
-        // Remove the matched term from unmatchedString without removing separating spaces
-        const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const removalRegex = new RegExp(`\\b${escapedTerm}\\b`, "gi");
-        metadata.unmatchedString = metadata.unmatchedString.replace(removalRegex, " ").replace(/\s+/g, " ").trim();
-    });
-
-    // Assign matched terms to metadata
-    metadata.matchedTerms = matchedTerms;
-
-    // Match Static Regex Patterns for HDR, is3D, and bitDepth
-    const staticRegexPatterns = [
-        { regex: /\b(\d+\s*bit)\b/i, field: "bitDepth" },
-        { regex: /\bHDR\b/i, field: "HDR", value: true },
-        { regex: /\b3D\b/i, field: "is3D", value: true },
-    ];
-
-    staticRegexPatterns.forEach(({ regex, field, value }) => {
-        const match = metadata.unmatchedString.match(regex);
-        if (match) {
-            metadata[field] = value !== undefined ? value : match[1];
-            metadata.unmatchedString = metadata.unmatchedString.replace(match[0], " ").replace(/\s+/g, " ").trim(); // Remove matched term and preserve spaces
-        }
-    });
-
-    // Clean up unmatchedString by removing meaningless characters and collapsing spaces
-    metadata.unmatchedString = metadata.unmatchedString
-        .replace(/[.-]+/g, " ") // Replace dots and dashes with spaces
-        .replace(/[()[\]{}]/g, " ") // Remove all brackets
-        .replace(/\s+/g, " ") // Collapse multiple spaces into one
-        .trim(); // Trim leading/trailing spaces
-
-    if (metadata.unmatchedString !== "") {
-        console.warn(`Unmatched String Remaining: "${metadata.unmatchedString}"`);
-    }
-
-    return {
-        title,
-        year,
-        resolution: metadata.resolution,
-        source: metadata.source,
-        codec: metadata.codec,
-        bitDepth: metadata.bitDepth,
-        HDR: metadata.HDR,
-        is3D: metadata.is3D,
-        fileExt: metadata.fileExt,
-        size: metadata.size,
-        encGroup: metadata.encGroup,
-        audio: metadata.audio,
-        version: metadata.version,
-        edition: metadata.edition,
-        unmatchedString: metadata.unmatchedString,
-        matchedTerms: metadata.matchedTerms,
-        type: "web"
-    };
-}
-
-/**
- * Query IndexedDB for a movie by its exact dataTitle.
- * @param {string} dataTitle - The normalized title to look up.
- * @param {Object} db - The IndexedDB instance.
- * @returns {Promise<Object|null>} - The matched movie object or null if not found.
- */
-async function getMovieByDataTitle(dataTitle, db) {
-    return new Promise((resolve, reject) => {
-        const transaction = db.transaction("movies", "readonly");
-        const store = transaction.objectStore("movies");
-        const index = store.index("dataTitle");
-
-        const query = index.get(dataTitle);
-
-        query.onsuccess = () => resolve(query.result || null);
-        query.onerror = () => reject(query.error);
-    });
-}
-
-/**
- * UI: Helper - String Parsing 
- * @param {*} dataTitle 
- * @param {*} year 
- * @param {*} db 
- * @returns 
- */
-async function fuzzyMatchMovieByFilters(dataTitle, year, db) {
-    const DIVERGENCE_THRESHOLD = 5; // Define the maximum allowed divergence
-    return new Promise((resolve, reject) => {
-        const transaction = db.transaction("movies", "readonly");
-        const store = transaction.objectStore("movies");
-        const index = store.index("dataTitle");
-        //const cursorRequest = store.openCursor();
-
-        let bestMatch = null;
-        let bestScore = Infinity;
-
-        // Extract the first three letters of the title for prefix matching
-        const normalizedPrefix = dataTitle.slice(0, 3).toLowerCase();
-        const minYear = parseInt(year) - 1;
-        const maxYear = parseInt(year) + 1;
-
-        // Strip years from dataTitle for comparison
-        const strippedDataTitle = dataTitle.replace(/\s\d{4}$/, "").toLowerCase();
-
-        // Pre-filter entries by prefix and year range
-        const range = IDBKeyRange.bound(normalizedPrefix, normalizedPrefix + "\uffff");
-        const cursorRequest = index.openCursor(range);
-
-        cursorRequest.onsuccess = (event) => {
-            const cursor = event.target.result;
-            if (cursor) {
-                const movie = cursor.value;
-
-                // Normalize movie title and extract release year
-                const normalizedMovieTitle = normalizeString(movie.dataTitle);
-                const movieYear = new Date(movie.Released).getFullYear();
-
-                // Strip years from movie title for comparison
-                const strippedMovieTitle = normalizedMovieTitle.replace(/\s\d{4}$/, "").toLowerCase();
-
-                // Strictly prefilter by prefix and year range
-                if (
-                    !normalizedMovieTitle.startsWith(normalizedPrefix) || // Prefix must match
-                    movieYear < minYear ||
-                    movieYear > maxYear // Year must be within ±1 range
-                ) {
-                    cursor.continue();
-                    return; // Skip this movie if it doesn't meet criteria
-                }
-
-                // Check if titles match exactly
-                const isExactTitleMatch = strippedDataTitle === strippedMovieTitle;
-
-                // Calculate divergence (Levenshtein distance)
-                const score = levenshteinDistance(strippedDataTitle, strippedMovieTitle);
-
-                // Enforce divergence threshold for fuzzy matches
-                if ((!isExactTitleMatch && score <= DIVERGENCE_THRESHOLD) || isExactTitleMatch) {
-                    if (score < bestScore || (score === bestScore && isExactTitleMatch)) {
-                        bestMatch = movie;
-                        bestScore = score;
-                    }
-                }
-
-                cursor.continue();
-            } else {
-                // Log only if a match is found within the threshold
-                if (bestMatch && bestScore <= DIVERGENCE_THRESHOLD) {
-                    console.log(
-                        `Matched "${dataTitle}" with "${bestMatch.dataTitle}". Divergence: ${bestScore}${bestMatch.Year !== year ? " (Year Difference)" : ""}`
-                    );
-                } else {
-                    console.log(`No suitable match found for "${dataTitle}" within threshold.`);
-                }
-                resolve(bestMatch); // Resolve with the best match or null
-            }
-        };
-
-        cursorRequest.onerror = () => reject(cursorRequest.error);
-    });
-}
-
-/**
- * Calculate Levenshtein Distance between two strings.
- * @param {string} a - First string.
- * @param {string} b - Second string.
- * @returns {number} - The Levenshtein Distance between the two strings.
- */
-function levenshteinDistance(a, b) {
-    const matrix = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
-
-    for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
-    for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
-
-    for (let i = 1; i <= a.length; i++) {
-        for (let j = 1; j <= b.length; j++) {
-            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-            matrix[i][j] = Math.min(
-                matrix[i - 1][j] + 1, // Deletion
-                matrix[i][j - 1] + 1, // Insertion
-                matrix[i - 1][j - 1] + cost // Substitution
-            );
-        }
-    }
-
-    return matrix[a.length][b.length];
-}
-
-/**
- * Add or update a URL with metadata in the "links" store.
- * @param {string} imdbID - The IMDb ID of the movie.
- * @param {string} url - The download URL to add.
- * @param {Object} metadata - The metadata associated with the URL.
- * @param {Object} db - IndexedDB instance.
- * @param {string} mediaType - The type of media ('movie' or 'tv').
- * @returns {boolean} - Whether any changes were made.
- */
-async function addUrlToLinksStore(imdbID, url, metadata, db) {
-    try {
-        // Check if imdbID is valid
-        if (!imdbID) {
-            console.error("Cannot add URL to links store: Missing imdbID");
-            return false;
-        }
-        
-        const transaction = db.transaction(["links"], "readwrite");
-        const linksStore = transaction.objectStore("links");
-
-        // Check if the URL already exists in the "links" store
-        const existingLink = await new Promise((resolve, reject) => {
-            const request = linksStore.get([imdbID, metadata.type || "web", url]);
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-        });
-
-        let hasUpdates = false;
-
-        if (existingLink) {
-            console.log(`URL "${url}" already exists for IMDb ID "${imdbID}". Checking for updates...`);
-
-            // Update metadata fields only if they are missing or different
-            const fieldsToUpdate = [
-                "resolution", "source", "codec", "bitDepth", "HDR", "is3D",
-                "version", "edition", "encGroup", "fileExt", "size", "audio", "downloaded"
-            ];
-
-            fieldsToUpdate.forEach((field) => {
-                const newValue = metadata[field];
-                const currentValue = existingLink[field];
-
-                if ((currentValue === undefined || currentValue === "") &&
-                    (newValue !== undefined && newValue !== null && newValue !== "")) {
-                    console.log(`Updating field "${field}" for URL "${url}": "${currentValue}" -> "${newValue}"`);
-                    existingLink[field] = newValue;
-                    hasUpdates = true;
-                }
-            });
-
-            if (hasUpdates) {
-                // Update the existing link in the store
-                await new Promise((resolve, reject) => {
-                    const request = linksStore.put(existingLink);
-                    request.onsuccess = resolve;
-                    request.onerror = reject;
-                });
-                console.log(`Metadata updated for URL "${url}" in IMDb ID "${imdbID}".`);
-            } else {
-                console.log(`No updates needed for URL "${url}" in IMDb ID "${imdbID}".`);
-            }
-        } else {
-            // Create a new link entry if it doesn't exist
-            const linkEntry = {
-                imdbID,
-                type: metadata.type || "web",
-                url,
-                resolution: metadata.resolution || "1080p",
-                source: metadata.source || "",
-                codec: metadata.codec || "",
-                bitDepth: metadata.bitDepth || "",
-                HDR: metadata.HDR || false,
-                is3D: metadata.is3D || false,
-                version: metadata.version || "",
-                edition: metadata.edition || "",
-                encGroup: metadata.encGroup || "",
-                fileExt: metadata.fileExt || "",
-                size: metadata.size || "",
-                audio: metadata.audio || "",
-                downloaded: metadata.downloaded || 0
-            };
-
-            await new Promise((resolve, reject) => {
-                const request = linksStore.put(linkEntry);
-                request.onsuccess = resolve;
-                request.onerror = reject;
-            });
-
-            console.log(`Added new URL "${url}" for IMDb ID "${imdbID}".`);
-            hasUpdates = true;
-        }
-
-        // Return whether updates were made (but don't update UI)
-        return hasUpdates;
-    } catch (error) {
-        console.error(`Failed to add/update URL "${url}" for IMDb ID "${imdbID}":`, error);
-        return false;
-    }
 }
 
 function refreshUrlLinksInTooltips(imdbIDs = []) {
@@ -19485,25 +17092,9 @@ function refreshUrlLinksInTooltips(imdbIDs = []) {
         </a>
       </li>`;
       
-      // 2. Add custom links if setting allows
-      if (userSettings.justwatch_links === "all") {
-        if (mediaData.links && mediaData.links.length > 0) {
-          mediaData.links.forEach(link => {
-            const details = [
-              link.version,
-              link.edition,
-              link.HDR ? "HDR" : ""
-            ].filter(Boolean).join(' ');
-            
-            newUrlsHtml += `
-            <li class="url-line">
-              <a href="${link.url}" target="_blank" class="full-link">
-                <span class="resolution-link url-ttip-txt">${link.resolution || "1080p"}</span>
-                ${details ? `<span class="url-ttip-txt">${details}</span>` : ''}
-              </a>
-            </li>`;
-          });
-        }
+      // 2. Add custom links based on the user's link visibility setting
+      if (userSettings.justwatch_links !== 'stream') {
+        newUrlsHtml += generateCustomLinksHtml(mediaData);
       }
       
       // 3. Add trailer links
@@ -19524,9 +17115,8 @@ function refreshUrlLinksInTooltips(imdbIDs = []) {
   });
 }
 
-
-// Userscript or browser extension
-function searchAndParse(searchTerm, title = null) {
+// Search function that supports user-defined URL to search for imdbID, title or search term
+function searchWeb(searchTerm, title = null) {
     let template = (userSettings && userSettings.searchURL) ? (userSettings.searchURL || '').trim() : '';
     if (!template) {
       // Directly open Settings to configure Search URL, then focus the input
@@ -19558,7 +17148,7 @@ function searchAndParse(searchTerm, title = null) {
         const media = mediaCache.get(imdbID);
         if (media) resolvedTitle = media.title || media.mediaTitle || media.name || '';
       }
-    } catch (err) {
+    } catch {
       // Ignore mediaCache errors
       resolvedTitle = resolvedTitle || '';
     }
@@ -19576,8 +17166,6 @@ function searchAndParse(searchTerm, title = null) {
 
     window.open(url, '_blank');
 }
-
-// ### filmy alpha code end ###
 
 /**
  * MAJOR DOM
@@ -19917,15 +17505,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         break;
 
       case "r":
-        // Refresh Media Card
+        // Refresh Media Card (Shift+R for force refresh)
         {
           const detailView = document.querySelector('.popup-content .detail-view');
           if (detailView) {
-            handleRefreshMedia(event, detailView);
+            handleRefreshMedia(event, detailView, event.shiftKey);
           } else {
             const hoveredCard = document.querySelector('.media-card:hover');
             if (hoveredCard) {
-              handleRefreshMedia(event, hoveredCard);
+              handleRefreshMedia(event, hoveredCard, event.shiftKey);
             } else {
               showNotification('⚠️ No media to refresh.', false);
             }
@@ -19991,48 +17579,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           }
         }
         if (imdbID) {
-          showLinkEditorDialog(imdbID, title);
+          showLinkEditor(imdbID, title);
         } else {
           showNotification('⚠️ No media selected for link.', false);
         }
-        break;
-      }
-      case "p": {
-        // Create a hidden file input element
-        const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = '.json,application/json';
-        fileInput.style.display = 'none';
-        document.body.appendChild(fileInput);
-
-        fileInput.addEventListener('change', async (event) => {
-          const file = event.target.files[0];
-          if (!file) return;
-          try {
-            const text = await file.text();
-            const jsonData = JSON.parse(text);
-            
-            // Detect whether it's a plain array or wrapped in an object
-            const dataArray = Array.isArray(jsonData) ? jsonData : jsonData.movies;
-            
-            // Validate that it's an array of data
-            if (!Array.isArray(dataArray)) {
-              showNotification('Invalid JSON format: Expected an array of data titles', false);
-              return;
-            }
-            
-            // Process the JSON data
-            await processDataFromJSON(dataArray, db);
-            showNotification('JSON data processed successfully', true);
-          } catch (error) {
-            console.error('Error processing JSON file:', error);
-            showNotification(`Failed to process JSON file: ${error.message}`, false);
-          }
-          document.body.removeChild(fileInput);
-        });
-
-        // Trigger the file input dialog
-        fileInput.click();
         break;
       }
 
@@ -20086,7 +17636,7 @@ case "s": {
     }
   }
   if (imdbID) {
-    searchAndParse(imdbID, title);
+    searchWeb(imdbID, title);
   } else {
     showNotification('⚠️ No media selected for search.', false);
   }
