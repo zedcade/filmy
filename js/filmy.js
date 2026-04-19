@@ -1,5 +1,5 @@
 /** 
- * filmy v1.5 Beta | (c) 2025 Alexander Ipfelkofer | MIT License
+ * filmy v1.6 Beta | (c) 2025 Alexander Ipfelkofer | MIT License
  * A Movie & Series Web App
  * Leveraging IndexedDB and LocalStorage
  * filmy provides a seamless experience for cataloguing and exploring your personal media collection
@@ -36,7 +36,7 @@
 
 /* GLOBAL VARS */
 const app_name = "filmy";
-const app_version = "1.5 Beta";
+const app_version = "1.6 Beta";
 const app_desc = `<strong>A Movie & Series Web App<br/>
 Leveraging IndexedDB and LocalStorage</strong>
 <p>Built with pure JavaScript - no frameworks or external libraries.<br/>
@@ -334,84 +334,99 @@ window.addEventListener('resize', debounce(() => {
 }, 300));
 
 // PWA install prompt
-let deferredPrompt;
+// let deferredPrompt; // Moved to AppState.ui.deferredPWAPrompt for better state management and to avoid global pollution
 
-/* ============================================
-   BACKWARD COMPATIBILITY ALIASES
-   Simplified approach: declare vars that proxy to AppState
-   ============================================ */
+const GLOBAL_SCOPE = (typeof globalThis !== 'undefined' ? globalThis :
+                     typeof window !== 'undefined' ? window :
+                     typeof self !== 'undefined' ? self : this);
 
-// These aliases allow existing code to work unchanged while using AppState internally
-// For new code, use AppState.db, AppState.cache.media, etc. directly
+function bindAppStateAlias(aliasName, pathKeys) {
+  Object.defineProperty(GLOBAL_SCOPE, aliasName, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return pathKeys.reduce((obj, key) => obj && obj[key], AppState);
+    },
+    set(value) {
+      const target = pathKeys.slice(0, -1).reduce((obj, key) => obj && obj[key], AppState);
+      if (target) {
+        target[pathKeys[pathKeys.length - 1]] = value;
+      }
+    }
+  });
+}
 
-// Create getters that reference AppState properties
-let db = AppState.db;
-let userSettings = AppState.userSettings;
-let mediaCache = AppState.cache.media;
-let genreCache = AppState.cache.genres;
-let pageSize = AppState.grid.pageSize;
-let observer = AppState.grid.observer;
-let tooltipObserver = AppState.grid.tooltipObserver;
-let tooltipsInitialized = AppState.grid.tooltipsInitialized;
-let tooltipMouseoverHandler = AppState.grid.tooltipMouseoverHandler;
-let activeMediaType = AppState.filters.mediaType;
-let activeCountry = AppState.filters.country;
-let activeGenres = AppState.filters.activeGenres;
-let activeLists = AppState.filters.activeLists;
-let activeSearchQuery = AppState.filters.search.query;
-let searchAbortController = AppState.filters.search.abortController;
-let activeStartYear = AppState.filters.year.start;
-let activeEndYear = AppState.filters.year.end;
-let defaultStartYear = AppState.filters.year.defaultStart;
-let defaultEndYear = AppState.filters.year.defaultEnd;
-let yearSortAscending = AppState.filters.year.ascending;
-let activeMinImdb = AppState.filters.ratings.imdb.min;
-let activeMaxImdb = AppState.filters.ratings.imdb.max;
-let activeMinTmdb = AppState.filters.ratings.tmdb.min;
-let activeMaxTmdb = AppState.filters.ratings.tmdb.max;
-let activeMinMetascore = AppState.filters.ratings.metascore.min;
-let activeMaxMetascore = AppState.filters.ratings.metascore.max;
-let activeMinRT = AppState.filters.ratings.rt.min;
-let activeMaxRT = AppState.filters.ratings.rt.max;
-let ratingsInitialized = AppState.filters.ratings.initialized;
-let filteredRecords = AppState.filters.filteredRecords;
+bindAppStateAlias('db', ['db']);
+bindAppStateAlias('userSettings', ['userSettings']);
+bindAppStateAlias('mediaCache', ['cache', 'media']);
+bindAppStateAlias('genreCache', ['cache', 'genres']);
+bindAppStateAlias('pageSize', ['grid', 'pageSize']);
+bindAppStateAlias('observer', ['grid', 'observer']);
+bindAppStateAlias('tooltipObserver', ['grid', 'tooltipObserver']);
+bindAppStateAlias('tooltipsInitialized', ['grid', 'tooltipsInitialized']);
+bindAppStateAlias('tooltipMouseoverHandler', ['grid', 'tooltipMouseoverHandler']);
+bindAppStateAlias('activeMediaType', ['filters', 'mediaType']);
+bindAppStateAlias('activeCountry', ['filters', 'country']);
+bindAppStateAlias('activeGenres', ['filters', 'activeGenres']);
+bindAppStateAlias('activeLists', ['filters', 'activeLists']);
+bindAppStateAlias('activeSearchQuery', ['filters', 'search', 'query']);
+bindAppStateAlias('searchAbortController', ['filters', 'search', 'abortController']);
+bindAppStateAlias('activeStartYear', ['filters', 'year', 'start']);
+bindAppStateAlias('activeEndYear', ['filters', 'year', 'end']);
+bindAppStateAlias('defaultStartYear', ['filters', 'year', 'defaultStart']);
+bindAppStateAlias('defaultEndYear', ['filters', 'year', 'defaultEnd']);
+bindAppStateAlias('yearSortAscending', ['filters', 'year', 'ascending']);
+bindAppStateAlias('activeMinImdb', ['filters', 'ratings', 'imdb', 'min']);
+bindAppStateAlias('activeMaxImdb', ['filters', 'ratings', 'imdb', 'max']);
+bindAppStateAlias('activeMinTmdb', ['filters', 'ratings', 'tmdb', 'min']);
+bindAppStateAlias('activeMaxTmdb', ['filters', 'ratings', 'tmdb', 'max']);
+bindAppStateAlias('activeMinMetascore', ['filters', 'ratings', 'metascore', 'min']);
+bindAppStateAlias('activeMaxMetascore', ['filters', 'ratings', 'metascore', 'max']);
+bindAppStateAlias('activeMinRT', ['filters', 'ratings', 'rt', 'min']);
+bindAppStateAlias('activeMaxRT', ['filters', 'ratings', 'rt', 'max']);
+bindAppStateAlias('ratingsInitialized', ['filters', 'ratings', 'initialized']);
+bindAppStateAlias('filteredRecords', ['filters', 'filteredRecords']);
+bindAppStateAlias('currentSortField', ['filters', 'sortField']);
+bindAppStateAlias('currentSortOrder', ['filters', 'sortOrder']);
+bindAppStateAlias('startIndex', ['grid', 'startIndex']);
+bindAppStateAlias('endIndex', ['grid', 'endIndex']);
+bindAppStateAlias('isAtMaxSize', ['grid', 'isAtMaxSize']);
+bindAppStateAlias('slideshowInterval', ['detail', 'slideshowInterval']);
+bindAppStateAlias('currentBackdrops', ['detail', 'backdrops', 'list']);
+bindAppStateAlias('currentBackdropIndex', ['detail', 'backdrops', 'currentIndex']);
+bindAppStateAlias('notifications', ['cache', 'notifications']);
+bindAppStateAlias('mediaSettingsCache', ['cache', 'mediaSettings']);
+bindAppStateAlias('renderedMediaIDs', ['cache', 'renderedIDs']);
+bindAppStateAlias('allListsMeta', ['cache', 'allListsMeta']);
+bindAppStateAlias('customListsMeta', ['cache', 'customListsMeta']);
+bindAppStateAlias('videoStatusCache', ['cache', 'videoStatus']);
+bindAppStateAlias('closeButtonTimeout', ['ui', 'closeButtonTimeout']);
+bindAppStateAlias('fadeTimeout', ['detail', 'fadeTimeout']);
+bindAppStateAlias('activeFilter', ['filters', 'activeFilter']);
+bindAppStateAlias('cachedYearRangeSize', ['grid', 'cachedYearRangeSize']);
+bindAppStateAlias('yearRangeMin', ['filters', 'yearRangeMin']);
+bindAppStateAlias('yearRangeMax', ['filters', 'yearRangeMax']);
+bindAppStateAlias('startYearLabel', ['filters', 'startYearLabel']);
+bindAppStateAlias('endYearLabel', ['filters', 'endYearLabel']);
+bindAppStateAlias('yearSliderTrack', ['filters', 'yearSliderTrack']);
+bindAppStateAlias('minYear', ['filters', 'minYear']);
+bindAppStateAlias('maxYear', ['filters', 'maxYear']);
+bindAppStateAlias('isObserving', ['grid', 'isObserving']);
+bindAppStateAlias('letterIndex', ['grid', 'letterIndex']);
+bindAppStateAlias('currentJumpLetter', ['grid', 'currentJumpLetter']);
+bindAppStateAlias('currentJumpIndex', ['grid', 'currentJumpIndex']);
+bindAppStateAlias('isJumping', ['grid', 'isJumping']);
+bindAppStateAlias('jumpLock', ['grid', 'jumpLocked']);
+bindAppStateAlias('lastBatchLoadTime', ['grid', 'lastBatchLoadTime']);
+bindAppStateAlias('BATCH_THROTTLE_INTERVAL', ['grid', 'BATCH_THROTTLE_INTERVAL']);
+bindAppStateAlias('previousMediaType', ['filters', 'previousMediaType']);
+bindAppStateAlias('mouseTimer', ['ui', 'mouseTimer']);
+bindAppStateAlias('deferredPrompt', ['ui', 'deferredPWAPrompt']);
+// inactivityTime: leave as const - it's never mutated, no point aliasing
+
 let listsMap = {};  // Will be populated from AppState.cache.lists
-let currentSortField = AppState.filters.sortField;
-let currentSortOrder = AppState.filters.sortOrder;
-let startIndex = AppState.grid.startIndex;
-let endIndex = AppState.grid.endIndex;
-let isAtMaxSize = AppState.grid.isAtMaxSize;
-let slideshowInterval = AppState.detail.slideshowInterval;
-let currentBackdrops = AppState.detail.backdrops.list;
-let currentBackdropIndex = AppState.detail.backdrops.currentIndex;
-let notifications = AppState.cache.notifications;
-let mediaSettingsCache = AppState.cache.mediaSettings;
-let renderedMediaIDs = AppState.cache.renderedIDs;
-let allListsMeta = AppState.cache.allListsMeta;
-let customListsMeta = AppState.cache.customListsMeta;
-let videoStatusCache = AppState.cache.videoStatus;
-let closeButtonTimeout = AppState.ui.closeButtonTimeout;
-let fadeTimeout = AppState.detail.fadeTimeout;
 let totalRecords = 0; // Track visible records count
-let activeFilter = AppState.filters.activeFilter;  // Current active filter type
-let cachedYearRangeSize = AppState.grid.cachedYearRangeSize;  // Cache size for year range
-let yearRangeMin = AppState.filters.yearRangeMin;  // DOM element for year range min
-let yearRangeMax = AppState.filters.yearRangeMax;  // DOM element for year range max
-let startYearLabel = AppState.filters.startYearLabel;  // DOM element for start year
-let endYearLabel = AppState.filters.endYearLabel;  // DOM element for end year
-let yearSliderTrack = AppState.filters.yearSliderTrack;  // DOM element for year track
-let minYear = AppState.filters.minYear;  // Minimum year value
-let maxYear = AppState.filters.maxYear;  // Maximum year value
-let isObserving = AppState.grid.isObserving;  // Intersection observer active flag
-let letterIndex = AppState.grid.letterIndex;  // Letter index for fast jumping
-let currentJumpLetter = AppState.grid.currentJumpLetter;  // Current jump letter
-let currentJumpIndex = AppState.grid.currentJumpIndex;  // Current jump index
-let isJumping = AppState.grid.isJumping;  // Jumping in progress flag
-let jumpLock = AppState.grid.jumpLocked;  // Jump locked flag
-let lastBatchLoadTime = AppState.grid.lastBatchLoadTime;  // Last batch load time
-let BATCH_THROTTLE_INTERVAL = AppState.grid.BATCH_THROTTLE_INTERVAL;  // Batch throttle interval
 let initialJWConfig = null;  // Initial JustWatch configuration
-let previousMediaType = AppState.filters.previousMediaType;  // Previous media type
 
 /** 
  * API related
@@ -518,7 +533,7 @@ const iconListConfig = {
 };
 
 // Global timer variable
-let mouseTimer;
+// let mouseTimer; // Moved to AppState.ui.mouseTimer for better state management and to avoid global pollution
 const inactivityTime = 3000; // 3 seconds inactivity
 
 /** DOM elements */

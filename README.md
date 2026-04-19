@@ -41,14 +41,14 @@ This is a Vibe Coding experiment, building a web app from scratch without writin
 * **Multiple User Profiles** \- Support for multiple user profiles within the same browser  
   * Each profile maintains its own settings, lists, and preferences  
   * Easily switch between profiles from the settings menu  
-  * Great for households with multiple users sharing the same d
+  * Great for households with multiple users sharing the same desktop profile
 * **Lazy Loading** \- Efficiently handles collections of 10,000+ movies  
 * **Resource Efficiency** \- Inline SVG symbol library with zero external dependencies  
 * **Keyboard Navigation** \- Letter jumping and detailed keyboard shortcuts  
 * **Progressive Web App** \- Install on any device
 * **Responsive Design** \- Currently optimized for desktop use, with mobile optimization in progress  
   * Best experienced on tablets and larger screens
-  * Mobile phone support is limited in Version 1.0 Beta
+  * Mobile phone support is limited in Version 1.x Beta
 
 ## **Screenshots**
 * **Grid View (50px)** 
@@ -82,16 +82,22 @@ While Filmy works when opened directly as a file, using a web server enables ful
 
 ## **Grid View**
 **Shortcuts work at any grid size**
+* **L** \- Add a link to a media card
+* **M** \- Filter for media cards with or without notes  
 * **N** \- Add a note for media card in focus  
 * **D** \- Open Detail View for media card in focus  
-* **T** \- Play trailer for media card in focus 
+* **T** \- Play trailer for media card in focus
 * **R** \- Refresh media card in focus
+* **Shift + R** \- Force Refresh media card in focus
+* **S** \- Web Search for imdbID or title using a link defined in Settings
+* **U** \- Filter for media cards with or without added URLS
 
 ## **Detail View**
-
+**Most Gridview Shortcuts work in Detail View as well, some will close the Detail view when pressed**
 * **SPACE** \- Backdrop View / Start Slideshow  
 * **Left/Right** \- Navigate through backdrops  
 * **X/ESC** \- Close Popup
+
 
 ## **Technical Architecture**
 
