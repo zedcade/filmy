@@ -1,8 +1,11 @@
 // Service Worker for image caching
 const APP_CACHE_NAME = 'filmy-movie-browser-image-cache-v1';
+// Paths are relative to the service worker, so the app also works when hosted in a
+// sub-directory (e.g. GitHub Pages); '/' would point at the domain root instead.
 const APP_ASSETS = [
-  '/',
+  './',
   'index.html',
+  'offline.html',
   'js/filmy.js',
   'css/filmy.css',
   'manifest.json',
@@ -34,6 +37,9 @@ const failedRequests = new Map();
 // In-memory cache for retry counts
 const retryAttempts = new Map();
 
+/**
+ * Install: activates immediately and pre-caches the app shell (APP_ASSETS).
+ */
 self.addEventListener('install', event => {
   self.skipWaiting();
   console.log('Service worker installed');
@@ -44,6 +50,10 @@ self.addEventListener('install', event => {
   );
 });
 
+/**
+ * Activate: starts the hourly retry/failure reset, deletes caches of older versions and
+ * takes control of open pages.
+ */
 self.addEventListener('activate', event => {
   console.log('Service worker activated');
   
@@ -65,11 +75,17 @@ self.addEventListener('activate', event => {
   );
 });
 
+/**
+ * Fetch: serves offline.html for navigations while offline, lets YouTube thumbnails pass
+ * through, uses network-first (with cache fallback) for TMDB/Amazon images and cache-first
+ * with expiry, failure memory and retry limits for other images. Other requests are not
+ * intercepted.
+ */
 self.addEventListener('fetch', event => {
 
   if (event.request.mode === 'navigate' && !navigator.onLine) {
     event.respondWith(
-      caches.match('/offline.html')
+      caches.match('offline.html')
         .then(response => {
           return response || new Response('Offline page not found', {
             status: 404,
@@ -255,7 +271,11 @@ self.addEventListener('fetch', event => {
 
 
 
-// Helper function to monitor and limit cache size
+/**
+ * Trims the cache to MAX_CACHE_SIZE entries by deleting the oldest responses (by Date header).
+ * @param {Cache} cache - The cache to trim.
+ * @returns {Promise<void>}
+ */
 async function monitorCacheSize(cache) {
   try {
     const requests = await cache.keys();
@@ -289,7 +309,9 @@ async function monitorCacheSize(cache) {
   }
 }
 
-// Helper function to clean up old failed requests
+/**
+ * Forgets failed image requests older than FAILED_REQUEST_EXPIRY so they are retried.
+ */
 function cleanupFailedRequests() {
   const now = Date.now();
   for (const [url, time] of failedRequests.entries()) {
@@ -303,6 +325,9 @@ function cleanupFailedRequests() {
 // PATCH #5b: Fix service worker memory leak (FIX Issue #7)
 let cleanupIntervalId = null;
 
+/**
+ * Starts an hourly timer that resets the retry counters and the failed request memory.
+ */
 function initRetryCleanup() {
   // Reset retry attempts periodically (every hour)
   const RETRY_RESET_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -313,7 +338,11 @@ function initRetryCleanup() {
   }, RETRY_RESET_INTERVAL);
 }
 
-// Handle various cache management messages
+/**
+ * Message handler for cache management commands from the page: 'cleanupCache' (remove
+ * expired entries), 'monitorCacheSize', 'clearFailedRequests' and 'getCacheStats' (replies
+ * with a 'cacheStats' message).
+ */
 self.addEventListener('message', event => {
   if (!event.data || !event.data.action) return;
 
