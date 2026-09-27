@@ -308,7 +308,11 @@ const AppState = {
 /* Global Constants */
 const DEFAULT_CARD_SIZE = 300; // Default card size (px)
 
-// PATCH #4: Mobile responsive pageSize (FIX Issue #4)
+/**
+ * Picks the number of cards loaded per grid batch based on viewport width
+ * (mobile-responsive page size).
+ * @returns {number} 12 for phones (<768px), 18 for tablets (<1024px), 24 otherwise.
+ */
 function getResponsivePageSize() {
   const width = window.innerWidth;
   if (width < 768) {
@@ -323,7 +327,10 @@ function getResponsivePageSize() {
 // Initialize grid page size
 AppState.grid.pageSize = getResponsivePageSize();
 
-// Update pageSize on window resize
+/**
+ * Recalculates the responsive page size on (debounced) window resize and re-renders the
+ * grid when it changes.
+ */
 window.addEventListener('resize', debounce(() => {
   const newPageSize = getResponsivePageSize();
   if (AppState.grid.pageSize !== newPageSize) {
@@ -340,13 +347,22 @@ const GLOBAL_SCOPE = (typeof globalThis !== 'undefined' ? globalThis :
                      typeof window !== 'undefined' ? window :
                      typeof self !== 'undefined' ? self : this);
 
+/**
+ * Defines a global accessor property (on globalThis) that transparently reads from
+ * and writes to a nested path inside AppState. This keeps legacy global variable
+ * names working after the state consolidation into AppState.
+ * @param {string} aliasName - Global variable name to expose (e.g. 'db').
+ * @param {string[]} pathKeys - Property path inside AppState (e.g. ['cache', 'media']).
+ */
 function bindAppStateAlias(aliasName, pathKeys) {
   Object.defineProperty(GLOBAL_SCOPE, aliasName, {
     enumerable: true,
     configurable: true,
+    /** @returns {*} The current value at the AppState path. */
     get() {
       return pathKeys.reduce((obj, key) => obj && obj[key], AppState);
     },
+    /** @param {*} value - New value to write to the AppState path. */
     set(value) {
       const target = pathKeys.slice(0, -1).reduce((obj, key) => obj && obj[key], AppState);
       if (target) {
@@ -427,6 +443,7 @@ bindAppStateAlias('deferredPrompt', ['ui', 'deferredPWAPrompt']);
 let listsMap = {};  // Will be populated from AppState.cache.lists
 let totalRecords = 0; // Track visible records count
 let initialJWConfig = null;  // Initial JustWatch configuration
+let reloadAfterSettingsClose = false; // Set when the active profile changed in the settings popup
 
 /** 
  * API related
@@ -541,15 +558,25 @@ const ratingsFilterButton = document.getElementById("ratings-filter-button");
 const gridSizeSlider = document.getElementById('gridSizeSlider');
 const gridSizeValue = document.getElementById('gridSizeValue');
 
+/**
+ * Bayesian weighted rating helper used by the "weighted" sort: titles with few votes are
+ * pulled towards `fallbackRating` (7.0) with a prior weight of `minVotes` (1000) votes.
+ */
 const weightedRating = {
   minVotes: 1000,
   fallbackRating: 7.0,
   minVotesFallbackProduct: 1000 * 7.0,
+  /**
+   * Bayesian weighted rating: pulls titles with few votes toward the fallback rating.
+   * @param {string|number} ratingStr - Raw rating value (e.g. "7.8").
+   * @param {string|number} votesStr - Vote count, may contain thousands separators (e.g. "12,345").
+   * @returns {number} Weighted rating, or the fallback rating if input is missing/invalid.
+   */
   calculate(ratingStr, votesStr) {
     if (!ratingStr || !votesStr) return weightedRating.fallbackRating;
     
     const rating = Number(ratingStr);
-    const votes = parseInt(votesStr.replace(/,/g, ''));
+    const votes = parseInt(String(votesStr).replace(/,/g, ''), 10);
     
     if (isNaN(rating) || isNaN(votes) || votes === 0) return weightedRating.fallbackRating;
     
@@ -562,13 +589,20 @@ const debouncedApplyFilters = debounce(() => applyFiltersAndSearch(true, null, t
 const throttledUpdateGridSizeLayout = throttle(updateGridSizeLayout, 16); // 16 = ~60fps
 const throttledJumpToLetter = throttle(jumpToLetter, 400); // 400ms limit between jumps
 
-// Cache for page size calculations
+/**
+ * Cache of calculated grid page sizes, keyed by card width and viewport size. Cleared
+ * automatically when the viewport changes by more than 10px.
+ */
 const pageSizeCache = {
   _cache: new Map(), // Using Map for better performance with complex keys
   _lastViewportWidth: window.innerWidth,
   _lastViewportHeight: window.innerHeight,
 
-  // Get cached page size or calculate new one
+  /**
+   * Returns the cached page size for a card width, calculating and caching it on a miss.
+   * @param {number} cardWidth - Card width in px.
+   * @returns {number} Number of cards per page.
+   */
   get(cardWidth) {
     // Invalidate cache if viewport has changed significantly
     this.invalidate();
@@ -589,7 +623,9 @@ const pageSizeCache = {
     return result;
   },
 
-  // Check if viewport has changed significantly and invalidate cache if needed
+  /**
+   * Clears the cache when the viewport changed by more than 10px in either dimension.
+   */
   invalidate() {
     const viewportChanged =
       Math.abs(this._lastViewportWidth - window.innerWidth) > 10 ||
@@ -603,14 +639,17 @@ const pageSizeCache = {
     }
   },
 
-  // Clear the cache manually
+  /** Clears the page size cache unconditionally. */
   clear() {
     this._cache.clear();
     console.log("Page size cache cleared");
   }
 };
 
-// API Key Manager using module pattern
+/**
+ * API key manager (module pattern): holds the TMDB key and OMDb keys of the current profile
+ * and picks the next OMDb key that has not reached its daily request limit.
+ */
 const apiKeyManager = (function () {
   // Private variables
   const keys = {
@@ -618,17 +657,21 @@ const apiKeyManager = (function () {
     omdb: []
   };
 
-  // Get TMDB API key
+  /** @returns {string} The TMDB API key (empty string if unset). */
   function getTmdbKey() {
     return keys.tmdb;
   }
 
-  // Get all OMDB API keys
+  /** @returns {string[]} A copy of the configured OMDb API keys. */
   function getOmdbKeys() {
     return [...keys.omdb]; // Return a copy to prevent modification
   }
 
-  // Get the next available OMDB API key
+  /**
+   * Returns the first OMDb key that has not reached its daily limit (omdbRateLimit).
+   * Resets daily usage counters first if the date changed.
+   * @returns {Promise<string|null>} An OMDb key, or null if all keys are exhausted.
+   */
   async function getNextOmdbKey() {
     try {
       if (!userSettings || !userSettings.username) {
@@ -661,7 +704,11 @@ const apiKeyManager = (function () {
     }
   }
 
-  // Initialize API keys from settings
+  /**
+   * Loads API keys from the user settings and syncs the OMDb usage tracking structure
+   * (drops removed keys, adds new keys with a zero count). Mutates `settings`.
+   * @param {Object} settings - User settings record.
+   */
   function initialize(settings) {
     if (!settings) return;
 
@@ -796,7 +843,10 @@ async function setApiCallCount(apiKey, count) {
   await saveUserSettingsToDB(userSettings, ['omdb_api_usage']);
 }
 
-// Background processing queue for people data
+/**
+ * Background queue that fetches TMDB person details for new/refreshed titles one task at a
+ * time, showing progress in the background notification.
+ */
 const backgroundPeopleQueue = {
   _queue: [],
   _isProcessing: false,
@@ -807,7 +857,12 @@ const backgroundPeopleQueue = {
   _initialQueueSize: 0,
   _totalPeopleCount: 0,
 
-  // Add a new task to the queue
+  /**
+   * Queues a batch of TMDB person IDs to be fetched and stored in the background.
+   * Starts processing if the queue is idle.
+   * @param {number[]} personIDs - TMDB person IDs.
+   * @param {string} imdbID - IMDb ID of the title the people belong to (for progress messages).
+   */
   addTask(personIDs, imdbID) {
     this._queue.push({ personIDs, imdbID });
 
@@ -835,7 +890,11 @@ const backgroundPeopleQueue = {
     this._updateNotification();
   },
 
-  // Process the queue
+  /**
+   * Drains the queue sequentially, updating progress notifications. Always shows a
+   * completion notification and resets the processing flag when done.
+   * @returns {Promise<void>}
+   */
   async _processQueue() {
     this._isProcessing = true;
 
@@ -862,6 +921,13 @@ const backgroundPeopleQueue = {
     }
   },
 
+  /**
+   * Fetches person details from TMDB for IDs that are missing from the 'people' store
+   * or older than 14 days, and saves them.
+   * @param {number[]} personIDs - TMDB person IDs.
+   * @param {string} imdbID - IMDb ID of the related title.
+   * @returns {Promise<void>}
+   */
   async _processPeopleData(personIDs, imdbID) {
     try {
       this._currentTask = { personIDs, imdbID };
@@ -927,12 +993,23 @@ const backgroundPeopleQueue = {
     }
   },
 
+  /**
+   * Updates the progress notification for the task currently being processed.
+   * @param {number} successCount - Number of people processed so far in the current task.
+   */
   _updateProgress(successCount) {
     if (this._currentTask) {
       this._updateNotification(this._currentTask.imdbID, successCount, this._currentTask.personIDs.length);
     }
   },
 
+  /**
+   * Shows/updates the sticky background-task notification. Uses a short message for a
+   * single task and a queue summary when several tasks are queued.
+   * @param {string|null} [currentImdbID=null] - Title being processed.
+   * @param {number} [processed=0] - People processed in the current task.
+   * @param {number} [total=0] - People in the current task.
+   */
   _updateNotification(currentImdbID = null, processed = 0, total = 0) {
     // Single media card refresh
     if (this._initialQueueSize === 1) {
@@ -963,6 +1040,7 @@ const backgroundPeopleQueue = {
     showNotification(`${queueText} | ${peopleText} | ${currentText}`, true, true);
   },
 
+  /** Shows the final queue summary and removes background notifications after 3s. */
   _showCompletionNotification() {
     if (this._initialQueueSize === 1) {
       let imdbID = this._lastProcessedImdbID || "unknown";
@@ -976,6 +1054,10 @@ const backgroundPeopleQueue = {
     }, 3000);
   },
 
+  /**
+   * @returns {{queueLength:number,isProcessing:boolean,currentTask:?Object,processedCount:number,
+   *   totalProcessedCount:number,initialQueueSize:number,totalPeopleCount:number}} Queue status snapshot.
+   */
   getStatus() {
     return {
       queueLength: this._queue.length,
@@ -1045,7 +1127,12 @@ async function fetchSvgInfo(items, type) {
   }
 }
 
-// Function to calculate proper date range for Changes API (max 14 days)
+/**
+ * Calculates the date range for the TMDB Changes API, which accepts at most 14 days.
+ * @param {number|string|Date} lastUpdateTimestamp - Time of the last local update.
+ * @returns {{startDate:string,endDate:string,exceededMaxRange:boolean}} Dates as YYYY-MM-DD;
+ *   exceededMaxRange is true when the last update is older than 14 days (a full refresh is needed).
+ */
 function calculateChangesDateRange(lastUpdateTimestamp) {
   const currentDate = new Date();
   const lastUpdate = new Date(lastUpdateTimestamp);
@@ -1073,10 +1160,20 @@ function calculateChangesDateRange(lastUpdateTimestamp) {
 }
 
 /**
- * add & refresh titles to the database
- * @param {*} db 
- * @param {*} param1 
- * @returns 
+ * Adds a new title to the database or refreshes an existing one. Resolves the title via
+ * TMDB/OMDb (interactive selection for manual adds, direct lookup for batch/refresh),
+ * then fetches and stores details, credits, genres, keywords, release dates, etc.
+ * On refresh, skips the update when TMDB reports no changes and no related data is missing.
+ * @param {IDBDatabase} db - Open database connection.
+ * @param {Object} [options]
+ * @param {?string} [options.title] - Title to search for (manual add).
+ * @param {?string|number} [options.year] - Release year to narrow the search.
+ * @param {?string} [options.imdb_ID] - IMDb ID (batch import / refresh).
+ * @param {?string} [options.category] - 'movies', 'series' or 'all'.
+ * @param {?number|string} [options.tmdbID] - TMDB ID (required when refreshing).
+ * @param {boolean} [options.isRefresh=false] - Refresh an existing record instead of adding.
+ * @param {boolean} [options.forceRefresh=false] - Skip the TMDB changes check.
+ * @returns {Promise<*>} Resolves when done; the resolved value depends on the path taken.
  */
 async function addTitle(db, { title = null, year = null, imdb_ID = null, category = null, tmdbID = null, isRefresh = false, forceRefresh = false } = {}) {
   // Detect if this is part of a batch process
@@ -1231,7 +1328,8 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
         const searchResponse = await fetch(searchUrl, { cache: 'no-cache' });
         if (!searchResponse.ok) throw new Error(`TMDB search failed: ${searchResponse.status}`);
         const searchData = await searchResponse.json();
-        const results = searchData.results || [];
+        // search/multi also returns people, which cannot be added as titles
+        const results = (searchData.results || []).filter(item => item.media_type !== 'person');
         if (!results.length) {
           showNotification(`No results found for "${title}"${year ? ` (${year})` : ""}.`, false);
           return false; // Return false to indicate title search failure
@@ -1393,9 +1491,16 @@ async function addTitle(db, { title = null, year = null, imdb_ID = null, categor
     }
 
     const imdbID = tmdbData.imdb_id || (selectedMediaType === 'tv' ? tmdbData.external_ids?.imdb_id : null) || `tmdb-${tmdbID}`;
-    let omdbData = imdbID.startsWith('tt') ? await queryOMDB(imdbID) : null;
+    // OMDb only enriches the record (ratings, awards, ...); a failure or exhausted keys must not abort the add
+    let omdbData = null;
+    if (imdbID.startsWith('tt')) {
+      omdbData = await queryOMDB(imdbID).catch(error => {
+        console.warn(`OMDb lookup failed for ${imdbID}, continuing with TMDB data only:`, error.message);
+        return null;
+      }) || null;
+    }
     const storeName = selectedMediaType === 'tv' ? 'series' : 'movies';
-    const freshData = mergeTMDbAndOMDb(tmdbData, omdbData);
+    const freshData = mergeTMDbAndOMDb(tmdbData, omdbData, tmdbData.release_dates);
     const existingRecord = await getFromDatabase(db, storeName, imdbID);
     const mergedRecord = existingRecord ? mergeEndpointData(existingRecord, freshData) : freshData;
 
@@ -1586,6 +1691,14 @@ async function updateMediaCard(imdbID, mediaType) {
   }
 }
 
+/**
+ * Recursively renames `id` properties according to context so that IDs from different
+ * TMDB entities don't collide: movie/tv/similar/recommendations -> tmdbID,
+ * person -> personID, keyword -> keywordID. Other contexts keep `id`.
+ * @param {*} data - Object, array or primitive to process.
+ * @param {?string} [context=null] - Entity context that decides the new key name.
+ * @returns {*} A renamed deep copy (primitives are returned as-is).
+ */
 function renameIdsDynamically(data, context = null) {
   if (Array.isArray(data)) {
     return data.map((item) => renameIdsDynamically(item, context));
@@ -1614,6 +1727,13 @@ function renameIdsDynamically(data, context = null) {
   return data;
 }
 
+/**
+ * Renames the top-level TMDB `id` to `tmdbID` and applies context-specific ID renaming
+ * to appended endpoints (credits, keywords, ...) as configured in endpointContextMap.
+ * @param {Object} tmdbData - TMDB details response with appended endpoints.
+ * @param {Object<string,string>} endpointContextMap - Endpoint name -> rename context.
+ * @returns {Object} The renamed data.
+ */
 function renameAllIDs(tmdbData, endpointContextMap) {
   const { id, ...rest } = tmdbData;
 
@@ -1657,18 +1777,39 @@ function extractCoreDetails(tmdbData) {
   return coreDetails; // Return only the core details plus page 1 of images, videos, recommendations, similar
 }
 
+/**
+ * Merges TMDB details and OMDb data into the flat record format stored in the
+ * 'movies'/'series' stores. OMDb values win for textual metadata (title, plot, people,
+ * ratings); TMDB is used for year, poster, IDs and technical fields.
+ * @param {Object} tmdbData - Renamed TMDB details (see renameAllIDs), with media_type set.
+ * @param {?Object} [omdbData=null] - OMDb response for the same title.
+ * @param {?Object} [releaseDatesData=null] - TMDB release_dates payload, used to derive the US
+ *   certification for movies when OMDb has none.
+ * @returns {?Object} The merged record, or null if tmdbData is missing.
+ */
 function mergeTMDbAndOMDb(tmdbData, omdbData = null, releaseDatesData = null) {
   if (!tmdbData) {
     console.error("TMDB Data is missing.");
     return null;
   }
 
-  // Helper functions
+  /**
+   * @param {string} str - Comma-separated OMDb value.
+   * @returns {string[]} Trimmed parts ([] for empty or "N/A").
+   */
   const splitAndTrim = (str) => str && str !== "N/A" ? str.split(",").map(s => s.trim()) : [];
+  /**
+   * @param {string} dateStr - Date or year range ("2019-05-01", "2018–2024").
+   * @returns {string} The first four-digit year, or "N/A".
+   */
   const extractYear = (dateStr) =>
     dateStr
       ? (dateStr.split(/[-–-]/)[0].match(/\d{4}/)?.[0] || "N/A")
       : "N/A";
+  /**
+   * @param {Array<{name:string}>} arr
+   * @returns {string[]} The `name` of each entry.
+   */
   const getNames = (arr) => arr?.map(item => item.name) || [];
 
   const isTV = tmdbData.media_type === 'tv';
@@ -1766,6 +1907,14 @@ function mergeTMDbAndOMDb(tmdbData, omdbData = null, releaseDatesData = null) {
   return merged;
 }
 
+/**
+ * Normalizes TMDB release date / content rating payloads.
+ * @param {Object} responseData - TMDB release_dates (movie) or content_ratings (tv) payload.
+ * @param {number} tmdbID - TMDB ID of the title.
+ * @param {'movie'|'tv'} mediaType - Media type.
+ * @returns {Array<Object>} Movies: one row per release for the 'release_dates' store.
+ *   TV: [{country, certification}] embedded in series_details.content_ratings.
+ */
 function transformReleaseDates(responseData, tmdbID, mediaType) {
   if (!tmdbID || !responseData?.results) return [];
 
@@ -1837,6 +1986,13 @@ function transformKeywords(keywords, tmdbID) {
   return mediaKeywords;
 }
 
+/**
+ * Flattens TMDB credits (movie `credits` or TV `aggregate_credits`) into one row per
+ * cast role / crew job for the '{movie|series}_credits' store.
+ * @param {{cast:Array, crew:Array}} credits - Credits with IDs already renamed to personID.
+ * @param {number} tmdbID - TMDB ID of the title.
+ * @returns {Array<Object>} Flattened credit rows (empty array for invalid input).
+ */
 function transformCredits(credits, tmdbID) {
   const flattenedCredits = [];
 
@@ -1944,7 +2100,14 @@ function extractCrew(credits, filter, isDepartment = false) {
     .map(person => person.name);
 }
 
-// Modified extractCrew to handle episode counts and TV job arrays
+/**
+ * Like extractCrew, but sorted by total_episode_count (TV aggregate credits) and limited.
+ * @param {Object} credits - Credits object ({crew: [...]}).
+ * @param {string|string[]} filter - Job title(s), or a department name when isDepartment is true.
+ * @param {boolean} [isDepartment=false] - Match person.department instead of job titles.
+ * @param {number} [limit=6] - Maximum number of names to return.
+ * @returns {string[]} Crew member names.
+ */
 function extractTopCrew(credits, filter, isDepartment = false, limit = 6) {
   if (!credits?.crew) return [];
 
@@ -2030,6 +2193,7 @@ async function showSelectionPopup(results, title, year = null) {
     const resultsContainer = document.getElementById("search-results-container");
 
     // Define a named click handler for result selection.
+    /** Resolves with the clicked search result. */
     function onSelect(event) {
       const movieOption = event.target.closest(".movie-option");
       if (movieOption) {
@@ -2041,6 +2205,7 @@ async function showSelectionPopup(results, title, year = null) {
     resultsContainer.addEventListener("click", onSelect);
 
     // Define a named handler for cancellation when clicking outside the popup.
+    /** Cancels the selection when clicking outside the popup. */
     function onDocumentClick(event) {
       if (!searchPopup.contains(event.target)) {
         cleanup();
@@ -2050,6 +2215,7 @@ async function showSelectionPopup(results, title, year = null) {
     document.addEventListener("click", onDocumentClick);
 
     // Define a named handler for pressing the Escape key.
+    /** Cancels the selection on Escape. */
     function onKeydown(event) {
       if (event.key === "Escape") {
         cleanup();
@@ -2059,6 +2225,7 @@ async function showSelectionPopup(results, title, year = null) {
     window.addEventListener("keydown", onKeydown);
 
     // Cleanup function to hide the popup and remove all event listeners.
+    /** Hides the popup and removes all listeners registered by showSelectionPopup. */
     function cleanup() {
       searchPopup.classList.add("hidden");
       searchPopup.innerHTML = "";
@@ -2069,6 +2236,16 @@ async function showSelectionPopup(results, title, year = null) {
   });
 }
 
+  /**
+   * Fetches every episode (with credits) of one TV season from TMDB, stores the episodes
+   * in 'series_episodes' and merges per-episode cast/crew/guest-star credits into
+   * 'series_credits' (tracking which episodes each credit appears in via season_episodes).
+   * @param {{db:IDBDatabase, showId:number, seasonNumber:number, imdbID:string}} context
+   *   Database handle, TMDB series ID, season number and the series' IMDb ID.
+   * @param {number} totalEpisodes - Number of episodes in the season.
+   * @returns {Promise<{episodesCount:number, creditsCount:number}>}
+   * @throws Re-throws any fetch/storage error after showing a notification.
+   */
   async function fetchAndStoreSeasonEpisodes(context, totalEpisodes) {
   const { db, showId: seriesID, seasonNumber, imdbID } = context;
   const episodeQueries = [];
@@ -2123,6 +2300,11 @@ async function showSelectionPopup(results, title, year = null) {
         return;
       }
       
+      /**
+       * Adds/merges credits of one role for the current episode into creditsMap.
+       * @param {Array<Object>} creditArray - TMDB cast, crew or guest_stars array.
+       * @param {'cast'|'crew'|'guest_star'} role - Credit role.
+       */
       const processCredits = (creditArray, role) => {
         if (!creditArray || !Array.isArray(creditArray)) return;
         
@@ -2279,6 +2461,20 @@ async function showSelectionPopup(results, title, year = null) {
   }
 }
 
+/**
+ * Generic sequential API query loop with throttling, key rotation and error handling.
+ * @param {Object|Object[]} items - Query descriptor(s).
+ * @param {function(Object, string): ?string} getUrl - Builds the URL for an item and API key;
+ *   return null to skip the item.
+ * @param {function(): (string|Promise<string>)} getApiKey - Returns the API key to use.
+ * @param {number} throttleLimit - Pause after every N requests (0 disables throttling).
+ * @param {number} throttleInterval - Pause length in ms.
+ * @param {function(Object)} [processResult] - Called with each successful JSON response.
+ * @param {function(Error, Object, ?string): *} [errorHandler] - May return a substitute result
+ *   for a failed item; return undefined to count it as an error.
+ * @param {boolean} [isBackgroundProcess=false] - Report progress to backgroundPeopleQueue.
+ * @returns {Promise<{successCount:number, skippedCount:number, errorCount:number}>}
+ */
 async function queryAPI(items, getUrl, getApiKey, throttleLimit, throttleInterval, processResult, errorHandler, isBackgroundProcess = false) {
   const itemsToQuery = Array.isArray(items) ? items : [items];
   const totalItems = itemsToQuery.length;
@@ -2307,7 +2503,11 @@ async function queryAPI(items, getUrl, getApiKey, throttleLimit, throttleInterva
 
       // Fetch data
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        const httpError = new Error(`HTTP ${response.status}`);
+        httpError.status = response.status; // used by errorHandler (e.g. tmdbErrorHandler)
+        throw httpError;
+      }
 
       const data = await response.json();
       if (data.Response === "False") throw new Error(data.Error || "API error");
@@ -2344,9 +2544,17 @@ async function queryAPI(items, getUrl, getApiKey, throttleLimit, throttleInterva
   return { successCount, skippedCount, errorCount };
 }
 
+/**
+ * queryAPI error handler for TMDB: substitutes a placeholder episode object for episodes
+ * that return 404, so a season with missing episodes can still be stored.
+ * @param {Error & {status?:number}} error - The fetch error (carries the HTTP status).
+ * @param {Object} _item - The query item (unused).
+ * @param {?string} url - The requested URL.
+ * @returns {Object|undefined} Placeholder episode, or undefined to propagate the error.
+ */
 function tmdbErrorHandler(error, _item, url) {
   // Check for 404 on episode endpoints
-  if (error.status === 404 && url.includes('/episode/')) {
+  if (error.status === 404 && url?.includes('/episode/')) {
     const matches = url.match(/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
     if (matches) {
       console.log("Handled 404 for episode:", url);
@@ -2365,6 +2573,15 @@ function tmdbErrorHandler(error, _item, url) {
   return undefined; // Let other errors propagate
 }
 
+/**
+ * Runs one or many TMDB queries through queryAPI.
+ * @param {Object|Object[]} data - Items like {tmdbID}, {title, year} or {tmdbID, endpoint}.
+ * @param {'search'|'details'|'custom'} endpoint - Query type. 'custom' appends item.endpoint
+ *   to /{tmdbCategory}/{tmdbID}/.
+ * @param {string} tmdbCategory - TMDB category, e.g. 'movie', 'tv' or 'person'.
+ * @param {boolean} [isBackgroundProcess=false] - Report progress to backgroundPeopleQueue.
+ * @returns {Promise<Object[]>} Successful JSON responses (failed items are omitted).
+ */
 async function queryTMDB(data, endpoint, tmdbCategory, isBackgroundProcess = false) {
   const results = [];
 
@@ -2417,14 +2634,27 @@ async function queryTMDB(data, endpoint, tmdbCategory, isBackgroundProcess = fal
   return results;
 }
 
-// Simple TMDB query helper function
+/**
+ * Fetches a URL and parses the JSON response.
+ * @param {string} url - Fully built TMDB URL (including api_key).
+ * @returns {Promise<Object>} Parsed JSON.
+ * @throws {Error} On non-2xx responses.
+ */
 async function queryTMDBSimple(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
   return await response.json();
 }
 
-// Function to query OMDB for a single ID
+/**
+ * Fetches a title from OMDb by IMDb ID using the next available key. On 401 the key is
+ * marked as exhausted and the request is retried with another key.
+ * @param {string} imdbID - IMDb ID (tt...).
+ * @param {number} [retryCount=0] - Internal retry counter.
+ * @returns {Promise<Object|undefined>} OMDb data without "N/A" values; undefined when all keys
+ *   turned out to be invalid.
+ * @throws {Error} When no key is available or on other HTTP/network errors.
+ */
 async function queryOMDB(imdbID, retryCount = 0) {
   const apiKey = await apiKeyManager.getNextOmdbKey();
   if (!apiKey) {
@@ -2473,11 +2703,11 @@ async function queryOMDB(imdbID, retryCount = 0) {
 }
 
 /**
- * Helper for query functions
- * @param {*} db 
- * @param {*} storeName 
- * @param {*} imdbID 
- * @returns 
+ * Reads a single record by primary key.
+ * @param {IDBDatabase} db - Open database.
+ * @param {string} storeName - Object store name.
+ * @param {IDBValidKey} imdbID - Primary key (imdbID for movies/series, but any key works).
+ * @returns {Promise<Object|null>} The record, or null if not found.
  */
 async function getFromDatabase(db, storeName, imdbID) {
   return new Promise((resolve, reject) => {
@@ -2513,12 +2743,12 @@ function getMenuBarHeight() {
 }
 
 /**
- * Show or update a notification popup with a CSS spinner.
+ * Shows or updates the notification bar (with an optional spinner). There is at most one
+ * foreground and one background notification; the foreground one takes priority and
+ * non-progress foreground messages auto-hide after 3 seconds.
  * @param {string} message - The message to display.
- * @param {boolean} isProgress - Whether this is a progress update or a final message.
- * @param {boolean} isBackgroundTask - Whether this is a background task notification.
- * @param {string} id - Optional ID for the notification. If not provided, a unique ID will be generated.
- * @returns {string} The ID of the notification.
+ * @param {boolean} isProgress - Show the spinner (progress update) instead of a final message.
+ * @param {boolean} [isBackgroundTask=false] - Whether this is the background-task notification.
  */
 function showNotification(message, isProgress, isBackgroundTask = false) {
   // First, look for any existing progress notifications that should be cleared
@@ -2645,6 +2875,12 @@ function cleanupObservers() {
   tooltipsInitialized = false;
 }
 
+/**
+ * Sets up lazy tooltip creation: an IntersectionObserver builds tooltips for cards near the
+ * viewport and a delegated mouseover handler builds them on hover. Runs once until
+ * cleanupObservers() resets it.
+ * @returns {IntersectionObserver|undefined} The tooltip observer (undefined if already initialized).
+ */
 function initTooltips() {
   // FIX #2: Only initialize tooltips once to prevent duplicate event listeners
   if (tooltipsInitialized) return;
@@ -2683,6 +2919,11 @@ function initTooltips() {
   return tooltipObserver;
 }
 
+/**
+ * Builds the hover tooltip and top-row icons for a media card (once) and wires the
+ * tooltip-visible class toggling.
+ * @param {HTMLElement} mediaCard - Card element with data-imdbid.
+ */
 function createTooltipForCard(mediaCard) {
   const imdbID = mediaCard.dataset.imdbid;
   const media = mediaCache.get(imdbID);
@@ -2715,10 +2956,10 @@ function createTooltipForCard(mediaCard) {
 }
 
 /**
- * UI: Custom confirm popup
- * @param {*} message 
- * @param {*} onConfirm 
- * @returns 
+ * Shows a Delete/Cancel confirmation popup.
+ * @param {string} message - HTML message shown in the dialog.
+ * @param {Function} [onConfirm] - Called when the user confirms.
+ * @returns {Promise<boolean>} true if confirmed, false if cancelled.
  */
 function showCustomConfirm(message, onConfirm) {
   return new Promise((resolve) => {
@@ -2891,11 +3132,13 @@ async function saveToDatabase(db, data, storeName = "movies") {
 }
 
 /**
- * DB: merge/update existing with new data
- * @param {*} existingData 
- * @param {*} newData 
- * @param {*} logUpdates 
- * @returns 
+ * Deep-merges freshly fetched data into an existing record. Relational arrays (objects with
+ * id/tmdbID) are skipped, other arrays are unioned with de-duplication, nested objects are
+ * merged recursively and primitives are overwritten. Also normalizes Country/Language values.
+ * @param {?Object} existingData - Stored record.
+ * @param {Object} newData - Fresh data (note: `id` may be renamed to `tmdbID` in place).
+ * @param {boolean} [logUpdates=false] - Log each change to the console.
+ * @returns {Object} The merged record.
  */
 function mergeEndpointData(existingData, newData, logUpdates = false) {
   if (!existingData) return newData;
@@ -2924,7 +3167,10 @@ function mergeEndpointData(existingData, newData, logUpdates = false) {
         continue;
       }
 
-      // Improved deduplication for arrays that have valid elements.
+      /**
+       * @param {*} item - Array element.
+       * @returns {string} De-duplication key (id, tmdbID or JSON).
+       */
       const getUniqueKey = (item) => {
         if (item === undefined || item === null) return '';
         if (typeof item.id !== "undefined" && item.id !== null) {
@@ -3004,8 +3250,9 @@ function isRelationalField(value) {
 }
 
 /**
- * Open IndexedDB
- * @returns {Promise<IDBDatabase>} - A promise that resolves to the opened database instance.
+ * Opens (and if needed creates/upgrades) the IndexedDB database and stores the handle in
+ * AppState.db.
+ * @returns {Promise<IDBDatabase>} The opened database instance.
  */
 async function openDB() {
   return new Promise((resolve, reject) => {
@@ -3277,7 +3524,13 @@ function initializeDB(dbInstance, transaction, oldVersion) {
   // --- Helper Functions ---
 
   /**
-   * Create or update a store with proper promise handling
+   * Creates an object store, or for an existing store re-creates it when its keyPath
+   * changed (only if empty) and syncs its indexes.
+   * @param {string} storeName - Store name.
+   * @param {IDBObjectStoreParameters} options - keyPath / autoIncrement options.
+   * @param {Array<{name:string,keyPath:(string|string[]),unique?:boolean,multiEntry?:boolean}>} [indexes=[]]
+   * @param {string[]} [obsoleteIndexes=[]] - Index names to delete.
+   * @returns {Promise<void>}
    */
   function createOrUpdateStore(storeName, options, indexes = [], obsoleteIndexes = []) {
     return new Promise((resolve, reject) => {
@@ -3355,7 +3608,13 @@ function initializeDB(dbInstance, transaction, oldVersion) {
   }
 
   /**
-   * Manage indexes with proper promise handling
+   * Deletes obsolete indexes, creates missing ones and re-creates indexes whose definition
+   * changed. Errors are logged, never thrown.
+   * @param {IDBObjectStore} store - Store from the versionchange transaction.
+   * @param {Array<Object>} indexes - Desired index definitions.
+   * @param {string[]} obsoleteIndexes - Index names to remove.
+   * @param {string} storeName - Store name (for logging).
+   * @returns {Promise<void>}
    */
   function manageIndexes(store, indexes, obsoleteIndexes, storeName) {
     return new Promise((resolve) => {
@@ -3418,7 +3677,8 @@ function initializeDB(dbInstance, transaction, oldVersion) {
   }
 
   /**
-   * Delete stores not defined in the current schema
+   * Deletes object stores that are no longer part of storesToCreate.
+   * @returns {Promise<void>}
    */
   function deleteObsoleteStores() {
     return new Promise((resolve) => {
@@ -3445,7 +3705,9 @@ function initializeDB(dbInstance, transaction, oldVersion) {
   }
     
   /**
-   * Seed default list metadata and other initial data
+   * Seeds the default core lists metadata (watchlist, collection, favourites, watched) for
+   * the 'default' user when upgrading to a newer DB_VERSION.
+   * @returns {Promise<void>}
    */
   function seedInitialData() {
     return new Promise((resolve) => {
@@ -3539,6 +3801,13 @@ function initializeDB(dbInstance, transaction, oldVersion) {
     });
 }
 
+/**
+ * Runs an automatic backup when enabled in the settings and the configured interval
+ * (daily / weekly / monthly) has elapsed since the last backup. Updates last_backup.
+ * @param {IDBDatabase} db - Open database.
+ * @param {Object} userSettings - Current user settings (backup_active, backup_interval, ...).
+ * @returns {Promise<void>}
+ */
 async function runScheduledBackup(db, userSettings) {
   if (!userSettings.backup_active) return;
 
@@ -3574,7 +3843,11 @@ async function runScheduledBackup(db, userSettings) {
 }
 
 /**
- * Backup the entire IndexedDB database as a JSON file.
+ * Exports all object stores as downloadable JSON backup file(s). Files are split at
+ * ~400MB; a single store larger than that is split into chunks described by
+ * metadata.storeInfo. The last file carries metadata.totalFiles.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<void>}
  */
 async function backupDatabase(db) {
   try {
@@ -3601,9 +3874,37 @@ async function backupDatabase(db) {
     let fileIndex = 1; // Start from 1 instead of 0
     const totalStores = objectStoreNames.length;
     let currentStore = 0;
-    let currentFile = {
-      metadata: { ...backupMetadata },
-      data: {}
+    /** @returns {{metadata:Object, data:Object<string,Object[]>}} An empty backup file. */
+    const newBackupFile = () => ({ metadata: { ...backupMetadata }, data: {} });
+    let currentFile = newBackupFile();
+
+    /**
+     * Downloads the current backup file and starts a new, empty one.
+     * @param {boolean} [isLast=false] - Whether this is the final file (stores totalFiles).
+     * @returns {Promise<void>}
+     */
+    const flushCurrentFile = async (isLast = false) => {
+      currentFile.metadata.fileIndex = fileIndex;
+      currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
+      if (isLast) currentFile.metadata.totalFiles = fileIndex;
+
+      const blob = new Blob([JSON.stringify(currentFile)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+
+      // Add a small delay to prevent browser from being overwhelmed with downloads
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      if (!isLast) {
+        fileIndex++;
+        currentFile = newBackupFile();
+      }
     };
 
     // Process each store completely before moving to the next
@@ -3625,16 +3926,12 @@ async function backupDatabase(db) {
         countRequest.onerror = () => reject(new Error(`Error counting records in '${storeName}': ${countRequest.error}`));
       });
 
+      // Empty stores are skipped (the final file is still written after the loop)
       if (storeRecordCount === 0) continue;
-
-      // Initialize store in current file
-      if (!currentFile.data[storeName]) {
-        currentFile.data[storeName] = [];
-      }
 
       // Process all records for this store
       let processedRecords = 0;
-      let allRecords = [];
+      const allRecords = [];
 
       // Fetch all records with progress reporting
       await new Promise((resolve, reject) => {
@@ -3672,141 +3969,43 @@ async function backupDatabase(db) {
 
       // Check if adding this store would exceed the file size limit
       currentFile.data[storeName] = allRecords;
-      const estimatedSize = JSON.stringify(currentFile).length;
+      if (JSON.stringify(currentFile).length <= MAX_FILE_SIZE) continue;
 
-      if (estimatedSize > MAX_FILE_SIZE && Object.keys(currentFile.data).length > 1) {
-        // If this store alone exceeds the limit and there are other stores already in the file
-        // Save the current file without this store
-        delete currentFile.data[storeName];
+      // Too big: take the store out of the current file again
+      delete currentFile.data[storeName];
+      const storeSize = JSON.stringify(allRecords).length;
 
-        // Update metadata
-        currentFile.metadata.fileIndex = fileIndex;
-        currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
-
-        // Save current file
-        const jsonData = JSON.stringify(currentFile);
-        const blob = new Blob([jsonData], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(url);
-
-        // Add a small delay to prevent browser from being overwhelmed with downloads
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        // Start a new file with just this store
-        fileIndex++;
-        currentFile = {
-          metadata: { ...backupMetadata },
-          data: {
-            [storeName]: allRecords
-          }
-        };
-      } else if (estimatedSize > MAX_FILE_SIZE) {
-        // If this store alone exceeds the limit, we need to split it across multiple files
-        // Chunk the array into smaller arrays
+      if (storeSize <= MAX_FILE_SIZE) {
+        // The store fits into a file of its own: save the current file and start a new one
+        if (Object.keys(currentFile.data).length > 0) await flushCurrentFile();
+        currentFile.data[storeName] = allRecords;
+      } else {
+        // The store alone exceeds the limit: split it into chunks, one file per chunk.
+        // Every chunk carries storeInfo so restoreDatabase can re-assemble the store.
+        const chunkCount = Math.ceil(storeSize / MAX_FILE_SIZE);
+        const chunkSize = Math.ceil(allRecords.length / chunkCount);
         const chunks = [];
-        const chunkSize = Math.ceil(allRecords.length / Math.ceil(estimatedSize / MAX_FILE_SIZE));
         for (let i = 0; i < allRecords.length; i += chunkSize) {
           chunks.push(allRecords.slice(i, i + chunkSize));
         }
 
         for (let i = 0; i < chunks.length; i++) {
-          // For first chunk, use current file if it's empty
-          if (i === 0 && Object.keys(currentFile.data).length === 1 && currentFile.data[storeName].length === 0) {
-            currentFile.data[storeName] = chunks[i];
-          } else {
-            // Save current file if not empty
-            if (Object.keys(currentFile.data).some(store => currentFile.data[store].length > 0)) {
-              currentFile.metadata.fileIndex = fileIndex;
-              currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
-
-              const jsonData = JSON.stringify(currentFile);
-              const blob = new Blob([jsonData], { type: "application/json" });
-              const url = URL.createObjectURL(blob);
-
-              const anchor = document.createElement("a");
-              anchor.href = url;
-              anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
-              document.body.appendChild(anchor);
-              anchor.click();
-              document.body.removeChild(anchor);
-              URL.revokeObjectURL(url);
-
-              // Add a small delay to prevent browser from being overwhelmed with downloads
-              await new Promise(resolve => setTimeout(resolve, 300));
-
-              fileIndex++;
+          if (Object.keys(currentFile.data).length > 0) await flushCurrentFile();
+          currentFile.data[storeName] = chunks[i];
+          currentFile.metadata.storeInfo = {
+            [storeName]: {
+              totalChunks: chunks.length,
+              currentChunk: i + 1,
+              totalRecords: allRecords.length
             }
-
-            // Create new file with this chunk
-            currentFile = {
-              metadata: { ...backupMetadata },
-              data: {
-                [storeName]: chunks[i]
-              }
-            };
-          }
-
-          // If this is not the last chunk, save the file
-          if (i < chunks.length - 1) {
-            currentFile.metadata.fileIndex = fileIndex;
-            currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
-            currentFile.metadata.storeInfo = {
-              [storeName]: {
-                totalChunks: chunks.length,
-                currentChunk: i + 1,
-                totalRecords: allRecords.length
-              }
-            };
-
-            const jsonData = JSON.stringify(currentFile);
-            const blob = new Blob([jsonData], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-
-            const anchor = document.createElement("a");
-            anchor.href = url;
-            anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
-            document.body.appendChild(anchor);
-            anchor.click();
-            document.body.removeChild(anchor);
-            URL.revokeObjectURL(url);
-
-            // Add a small delay to prevent browser from being overwhelmed with downloads
-            await new Promise(resolve => setTimeout(resolve, 300));
-
-            fileIndex++;
-          }
+          };
         }
-      }
-
-      // If we've reached the last store, save the current file
-      if (currentStore === totalStores) {
-        currentFile.metadata.fileIndex = fileIndex;
-        currentFile.metadata.totalFiles = fileIndex;
-        currentFile.metadata.totalRecords = Object.values(currentFile.data).flat().length;
-
-        const jsonData = JSON.stringify(currentFile);
-        const blob = new Blob([jsonData], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `${timestamp}_filmy-backup_${fileIndex}.json`;
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(url);
-
-        // Add a small delay to prevent browser from being overwhelmed with downloads
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // The last chunk stays in currentFile and is saved with the following stores
       }
     }
+
+    // Save the final file (it carries totalFiles, which restoreDatabase requires)
+    await flushCurrentFile(true);
 
     showNotification(`Database backed up successfully: ${totalRecords} records in ${fileIndex} files with timestamp "${timestamp}"`, false);
   } catch (error) {
@@ -3815,6 +4014,14 @@ async function backupDatabase(db) {
   }
 }
 
+/**
+ * Restores the database from backup file(s) created by backupDatabase. Validates that all
+ * files are present, then clears and refills every store found in the backup
+ * (re-assembling chunked stores).
+ * @param {FileList|File[]} files - Selected backup JSON files.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<boolean>} true when the restore ran, false on validation or read errors.
+ */
 async function restoreDatabase(files, db) {
   try {
     // Sort files to ensure they're processed in order
@@ -4206,6 +4413,13 @@ async function restoreDatabase(files, db) {
   }
 }
 
+/**
+ * Loads movies, series, links, lists (current user only) and details from IndexedDB and
+ * merges them into the in-memory media records used by the grid. A failing store is
+ * logged and skipped instead of aborting the whole load.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<Object[]>} Merged media records with numericYear set.
+ */
 async function fetchAllRecords(db) {
   // PATCH #2: Per-store error recovery (FIX Issue #2)
   const storeNames = ["movies", "series", "links", "lists", "movie_details", "series_details"];
@@ -4291,6 +4505,13 @@ async function fetchAllRecords(db) {
   return convertYearToNumber(mergedMedia);
 }
 
+/**
+ * Reads all records of a store: getAll() for small stores (<1000 records), otherwise a
+ * cursor.
+ * @param {IDBDatabase} db - Open database.
+ * @param {string} storeName - Store name.
+ * @returns {Promise<Object[]>} All records.
+ */
 async function fetchStoreInChunks(db, storeName) {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(storeName, "readonly");
@@ -4343,6 +4564,16 @@ async function fetchStoreInChunks(db, storeName) {
   });
 }
 
+/**
+ * Enriches media records in chunks of 500 (yielding to the UI between chunks): adds
+ * numericYear/releaseDate, custom poster/backdrop, links, list membership, origin_country
+ * and YouTube trailers.
+ * @param {Object[]} allMedia - Raw movie/series records (with mediaType).
+ * @param {Object<string,Object[]>} linksMap - imdbID -> links.
+ * @param {Object<string,Object<string,boolean>>} listsMap - imdbID -> {listName: true}.
+ * @param {Object<number,Object>} detailsMap - tmdbID -> details record.
+ * @returns {Promise<Object[]>} Enriched records.
+ */
 async function processMediaInChunks(allMedia, linksMap, listsMap, detailsMap) {
   const mergedMedia = [];
   const chunkSize = 500;
@@ -4398,6 +4629,16 @@ async function processMediaInChunks(allMedia, linksMap, listsMap, detailsMap) {
   return mergedMedia;
 }
 
+/**
+ * Central filter pipeline: applies media type, search query, lists, genres, rating
+ * ranges, country, year range and the special no-urls / notes filters, then sorts,
+ * stores the result in filteredRecords and re-renders the grid.
+ * @param {boolean} [shouldSort=true] - Sort the result using the current sort state.
+ * @param {?Object[]} [preFilteredResults=null] - Start from these records instead of the whole
+ *   cache (the text search is skipped in that case).
+ * @param {boolean} [shouldResetGrid=true] - Clear the grid before rendering.
+ * @returns {Promise<void>}
+ */
 async function applyFiltersAndSearch(shouldSort = true, preFilteredResults = null, shouldResetGrid = true) {
   // Start with the prefiltered results if provided; otherwise, use all movies from mediaCache
   let filtered = preFilteredResults ? preFilteredResults : Array.from(mediaCache.values());
@@ -4710,9 +4951,10 @@ function updateMatchCount() {
 }
 
 /**
- * DB: Load all movies into memory
- * @param {*} db 
- * @returns 
+ * Loads all records into memory (mediaCache), refreshes list metadata, country/year
+ * filters and renders the first grid page. Guarded against concurrent calls.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<void>}
  */
 async function loadRecords(db) {
   if (isFetching) return;
@@ -4740,8 +4982,10 @@ async function loadRecords(db) {
 }
 
 /**
- * Loads all list metadata and updates global arrays.
+ * Reloads list metadata for a user into allListsMeta, customListsMeta and listsMap.
  * Call this after any change to lists_metadata, and on app load.
+ * @param {string} username - Current username.
+ * @returns {Promise<void>}
  */
 async function reloadListMetadata(username) {
   allListsMeta = await getUserLists(username);
@@ -4798,6 +5042,10 @@ function updateActiveYears() {
   }
 }
 
+/**
+ * Stores records in mediaCache keyed by imdbID.
+ * @param {Object[]} records - Media records (with mediaType).
+ */
 function cacheRecords(records) {
   if (!Array.isArray(records)) {
     console.error("Invalid input to cacheMovies: expected an array, got", records);
@@ -4814,6 +5062,15 @@ function cacheRecords(records) {
   // console.log(`Cached ${records.length} records (${movieCount} movies + ${tvCount} series)`);
 }
 
+/**
+ * Re-reads one title (record, links, current user's lists, details) from IndexedDB and
+ * updates its mediaCache entry.
+ * @param {string} imdbID - IMDb ID.
+ * @param {IDBDatabase} db - Open database.
+ * @param {'movie'|'tv'} mediaType - Media type (selects the store).
+ * @returns {Promise<Object>} The refreshed cache entry.
+ * @throws {Error} If the record does not exist.
+ */
 async function updateCache(imdbID, db, mediaType) {
   const storeName = mediaType === 'tv' ? 'series' : 'movies';
   const detailsStoreName = mediaType === 'tv' ? 'series_details' : 'movie_details';
@@ -4844,10 +5101,10 @@ async function updateCache(imdbID, db, mediaType) {
     req.onerror = (e) => reject(new Error(`Lists fetch error: ${e.target.error}`));
   });
 
-  // Transform lists data into an object.
+  // Transform lists data into an object (only the current user's lists; the store is shared by all profiles).
   const validLists = Array.isArray(lists) ? lists : [];
   const mediaListStates = validLists.reduce((acc, list) => {
-    if (list && list.list) {
+    if (list && list.list && list.username === userSettings?.username) {
       acc[list.list] = true;
     }
     return acc;
@@ -4930,7 +5187,9 @@ function updateYearSliderTrack(rangeStart, rangeEnd, track, min, max) {
 }
 
 /**
- * Update slider values and apply filters.
+ * Reads the year slider inputs (min pushes max and vice versa), updates labels, the active
+ * year range, track colors and thumb highlight, then re-applies filters (debounced).
+ * @param {'min'|'max'} [triggeredBy] - Which thumb was moved.
  */
 function updateYearSliderValues(triggeredBy) {
   if (!yearRangeMin || !yearRangeMax) return;
@@ -5022,6 +5281,10 @@ function initializeYearSlider() {
   updateYearSliderTrack(yearRangeMin, yearRangeMax, yearSliderTrack, minYear, maxYear);
 }
 
+/**
+ * Syncs the "active" class of the list filter buttons (core lists and custom lists shown
+ * in filters) with activeLists.
+ */
 function initializeListFilters() {
   // Get all available lists from listsMap (core + custom)
   const availableLists = Object.entries(listsMap)
@@ -5069,7 +5332,9 @@ function initializeListFilters() {
   });
 }
 
-// Global resetGenreFilters function
+/**
+ * Clears all selected genres, deselects the genre pills and re-applies filters.
+ */
 function resetGenreFilters() {
   if (activeGenres.length === 0) {
     console.log("No active genres to reset");
@@ -5088,7 +5353,9 @@ function resetGenreFilters() {
   updateFilterButtonState(document.getElementById("genre-filter-button"));
 }
 
-// Handler for genre button click
+/**
+ * Click handler of the genre filter button: resets genre filters if any are active.
+ */
 function handleGenreButtonClick() {
   // Only reset genre filters if any are active
   if (activeGenres.length > 0) {
@@ -5097,7 +5364,10 @@ function handleGenreButtonClick() {
   // Do nothing if no genres are active
 }
 
-// Modified initializeGenreFilter function without the resetGenreFilters function
+/**
+ * Builds the genre pill list from genreCache. Pills of genres without any title in the
+ * collection are disabled; clicking a pill toggles it in activeGenres and re-filters.
+ */
 function initializeGenreFilter() {
   const genreContainer = document.getElementById("genre-container");
   const genreFilterButton = document.getElementById("genre-filter-button");
@@ -5165,7 +5435,12 @@ function initializeGenreFilter() {
 }
 
 /**
- * Updates the background color of a slider track based on the selected range.
+ * Paints the selected range of a rating slider track.
+ * @param {HTMLInputElement} rangeStart - Lower range input.
+ * @param {HTMLInputElement} rangeEnd - Upper range input.
+ * @param {HTMLElement} track - Track element to color.
+ * @param {number} min - Slider minimum.
+ * @param {number} max - Slider maximum.
  */
 function updateRatingSliderTrack(rangeStart, rangeEnd, track, min, max) {
   const [startValue, endValue] = [parseFloat(rangeStart.value), parseFloat(rangeEnd.value)];
@@ -5185,7 +5460,11 @@ function updateRatingSliderTrack(rangeStart, rangeEnd, track, min, max) {
 }
 
 /**
- * Updates the position and value of a slider thumb's value element.
+ * Positions and fills the value bubble above a rating slider thumb and toggles the
+ * thumb's "active" class when it is not at its default end.
+ * @param {HTMLInputElement} range - Range input.
+ * @param {HTMLElement} valueSpan - Value bubble element.
+ * @param {boolean} [appendPercentage=false] - Append "%" to the displayed value.
  */
 function updateRatingThumbValue(range, valueSpan, appendPercentage = false) {
   const rangeRect = range.getBoundingClientRect();
@@ -5211,7 +5490,8 @@ function updateRatingThumbValue(range, valueSpan, appendPercentage = false) {
 }
 
 /**
- * Updates all slider thumb values and their positions, and updates slider tracks.
+ * Refreshes thumb bubbles and track colors of all rating sliders.
+ * @param {Object<string,Object>} sliders - Slider config map returned by initializeRatingsFilter.
  */
 function updateAllRatingValues(sliders) {
   Object.values(sliders).forEach(({ rangeStart, rangeEnd, startValue, endValue, track, min, max }) => {
@@ -5225,9 +5505,19 @@ function updateAllRatingValues(sliders) {
 }
 
 /**
- * Handles slider updates by updating global filter variables,
- * positioning thumbs, resetting filters when sliders are at default positions,
- * and enforcing min/max constraints.
+ * Handles a rating slider input: prevents the thumbs from crossing, updates bubbles,
+ * track and thumb state, and writes the new range through `callback` (null/null when both
+ * thumbs are at their defaults, i.e. the filter is off).
+ * @param {HTMLInputElement} rangeStart - Lower range input.
+ * @param {HTMLInputElement} rangeEnd - Upper range input.
+ * @param {HTMLElement} startSpan - Lower value bubble.
+ * @param {HTMLElement} endSpan - Upper value bubble.
+ * @param {function(?number, ?number)} callback - Receives the new min/max filter values.
+ * @param {string|number} defaultMin - Default (off) lower value.
+ * @param {string|number} defaultMax - Default (off) upper value.
+ * @param {?HTMLElement} [track=null] - Track element.
+ * @param {number|string} [min=0] - Slider minimum.
+ * @param {number|string} [max=100] - Slider maximum.
  */
 function handleRatingSliderUpdate(rangeStart, rangeEnd, startSpan, endSpan, callback, defaultMin, defaultMax, track = null, min = 0, max = 100) {
   let startValue = parseFloat(rangeStart.value);
@@ -5278,7 +5568,9 @@ function handleRatingSliderUpdate(rangeStart, rangeEnd, startSpan, endSpan, call
 }
 
 /**
- * Initialize the ratings filter sliders and set up event listeners.
+ * Initializes the IMDb, TMDB, Metascore and Rotten Tomatoes range sliders (once) and wires
+ * their input handlers to the rating filter state.
+ * @returns {?Object<string,Object>} Slider config map, or null if already initialized.
  */
 function initializeRatingsFilter() {
   if (ratingsInitialized) return null; // Prevent multiple initializations
@@ -5327,6 +5619,11 @@ function initializeRatingsFilter() {
    * Attach event listeners to sliders dynamically.
    */
   Object.entries(sliders).forEach(([key, { rangeStart, rangeEnd, startValue, endValue, track, min, max }]) => {
+    /**
+     * Writes the slider range into the matching rating filter state.
+     * @param {?number} start - Minimum (null = no lower bound).
+     * @param {?number} end - Maximum (null = no upper bound).
+     */
     const callback = (start, end) => {
       switch (key) {
         case "imdb":
@@ -5350,6 +5647,7 @@ function initializeRatingsFilter() {
       }
     };
 
+    /** Input handler: updates the slider UI/state and re-applies filters (debounced). */
     const handleInputEvent = () => {
       handleRatingSliderUpdate(
         rangeStart,
@@ -5384,6 +5682,13 @@ function initializeRatingsFilter() {
   return sliders;
 }
 
+/**
+ * Runs a local search for a category.
+ * @param {string} query - Search text.
+ * @param {'All'|'Movies'|'Series'|'People'|'Keywords'} category - Search category.
+ * @param {AbortSignal} [signal] - Aborts the search (throws an AbortError).
+ * @returns {Promise<Object[]>} Matching media records.
+ */
 async function performSearch(query, category, signal) {
   if (!query || query.trim() === "") return [];
 
@@ -5420,12 +5725,13 @@ async function performSearch(query, category, signal) {
 }
 
 /**
- * UI/DB: global search in indexedDB
- * @param {*} items 
- * @param {*} searchQuery 
- * @param {*} fields 
- * @param {*} normFn 
- * @returns 
+ * Synchronous ranked text search. Results are grouped (exact, starts-with, contains) for the
+ * primary field first, then the other fields; each group is sorted alphabetically.
+ * @param {Object[]} items - Records to search.
+ * @param {string} searchQuery - Search text.
+ * @param {string[]} fields - Fields to match; fields[0] is the primary field.
+ * @param {function(string): string} [normFn=normalizeForSearch] - Normalization function.
+ * @returns {Object[]} Matching items (copies with sortKey and _matchField added).
  */
 function searchItems(items, searchQuery, fields, normFn = normalizeForSearch) {
   if (!items || !Array.isArray(items)) {
@@ -5490,22 +5796,23 @@ function searchItems(items, searchQuery, fields, normFn = normalizeForSearch) {
 }
 
 /**
- * Helper: Sort strings
- * @param {*} items 
- * @returns 
+ * Sorts items in place by their `sortKey` string.
+ * @param {Array<{sortKey:string}>} items
+ * @returns {Array<{sortKey:string}>} The same array, sorted.
  */
 function sortItems(items) {
   return items.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
 }
 
 /**
- * DB: lookup values in DB
- * @param {*} db 
- * @param {*} storeName 
- * @param {*} fields 
- * @param {*} value 
- * @param {*} normFn 
- * @returns 
+ * Queries a store: personID/keywordID use an exact index lookup, other fields do a
+ * normalized substring match over all records.
+ * @param {IDBDatabase} db - Open database.
+ * @param {string} storeName - Store name.
+ * @param {string[]} fields - Fields to match (fields[0] decides the strategy).
+ * @param {*} value - Value to look for.
+ * @param {function(string): string} [normFn=normalizeForSearch] - Normalization for substring matches.
+ * @returns {Promise<Object[]>} Matching records.
  */
 async function queryIndexedDB(db, storeName, fields, value, normFn = normalizeForSearch) {
   return new Promise((resolve, reject) => {
@@ -5578,9 +5885,12 @@ async function queryIndexedDB(db, storeName, fields, value, normFn = normalizeFo
 }
 
 /**
- * DB: search across all stores with chunked processing
- * @param {*} query 
- * @returns 
+ * "All" search: searches movies and series (rendering these results immediately), then
+ * people and keywords via credit/keyword lookups, and re-renders with the combined,
+ * de-duplicated result.
+ * @param {string} query - Search text.
+ * @param {AbortSignal} [signal] - Aborts the search.
+ * @returns {Promise<Object[]>} All matching media records.
  */
 async function searchAllStores(query, signal) {
   if (!query || query.trim() === "") return [];
@@ -5714,7 +6024,14 @@ function yieldToUI() {
 }
 
 /**
- * Chunked search implementation to prevent UI blocking
+ * Ranked text search like searchItems, but processes items in chunks of 500 and yields to
+ * the UI between chunks and sorts. Abortable.
+ * @param {Object[]} items - Records to search.
+ * @param {string} searchQuery - Search text.
+ * @param {string[]} fields - Fields to match; fields[0] is the primary field.
+ * @param {function(string): string} [normFn=normalizeForSearch] - Normalization function.
+ * @param {AbortSignal} [signal] - Abort signal.
+ * @returns {Promise<Object[]>} Ranked matches.
  */
 async function chunkedSearch(items, searchQuery, fields, normFn = normalizeForSearch, signal) {
   if (!items || !Array.isArray(items)) {
@@ -5824,7 +6141,11 @@ async function chunkedSearch(items, searchQuery, fields, normFn = normalizeForSe
 }
 
 /**
- * Sort items in chunks to prevent UI blocking
+ * Sorts items by sortKey; arrays of 1000+ items are sorted in chunks (yielding to the UI)
+ * and merged.
+ * @param {Array<{sortKey:string}>} items - Items to sort.
+ * @param {AbortSignal} [signal] - Abort signal.
+ * @returns {Promise<Array<{sortKey:string}>>} Sorted items.
  */
 async function chunkedSort(items, signal) {
   if (items.length <= 1) return items;
@@ -5860,7 +6181,9 @@ async function chunkedSort(items, signal) {
 }
 
 /**
- * Merge multiple sorted arrays into one sorted array
+ * K-way merge of arrays that are each sorted by sortKey.
+ * @param {Array<Array<{sortKey:string}>>} arrays - Sorted arrays.
+ * @returns {Array<{sortKey:string}>} One merged, sorted array.
  */
 function mergeSortedArrays(arrays) {
   // If only one array, return it
@@ -5900,7 +6223,16 @@ function mergeSortedArrays(arrays) {
 }
 
 /**
- * Optimized searchItemsWithLookup with chunked processing
+ * Filters people/keywords by the query and maps them to media in the collection via the
+ * credit/keyword stores (e.g. people -> movie_credits/series_credits -> tmdbID -> media).
+ * @param {Object[]} items - People or keyword records.
+ * @param {string} searchQuery - Search text.
+ * @param {string[]} fields - Fields to match on the items.
+ * @param {IDBDatabase} db - Open database.
+ * @param {?{type:string, idField:string, storeNames:string[]}} [lookupFlow=null] - Lookup
+ *   configuration; without it the matched items themselves are returned.
+ * @param {AbortSignal} [signal] - Abort signal.
+ * @returns {Promise<Object[]>} Matching media records (or matched items without lookupFlow).
  */
 async function searchItemsWithLookup(items, searchQuery, fields, db, lookupFlow = null, signal) {
   if (!items || !Array.isArray(items)) {
@@ -5936,7 +6268,8 @@ async function searchItemsWithLookup(items, searchQuery, fields, db, lookupFlow 
   const ids = matchedItems.map(item => item[lookupFlow.idField])
     .filter(id => id !== undefined && id !== null);
 
-  const tmdbIDs = new Set();
+  // TMDB IDs are only unique per media type (movie 123 != tv 123), so keys are "movie:123" / "tv:123"
+  const mediaKeys = new Set();
   // Handle multiple store names if provided, otherwise use single storeName
   const storeNames = lookupFlow.storeNames || [lookupFlow.storeName];
 
@@ -5951,9 +6284,10 @@ async function searchItemsWithLookup(items, searchQuery, fields, db, lookupFlow 
     // Process this chunk of IDs
     for (const id of idChunk) {
       for (const storeName of storeNames) {
+        const storeMediaType = storeName.startsWith('series_') ? 'tv' : 'movie';
         const credits = await queryIndexedDB(db, storeName, [lookupFlow.idField], id);
         credits.forEach(credit => {
-          if (credit.tmdbID) tmdbIDs.add(credit.tmdbID);
+          if (credit.tmdbID) mediaKeys.add(`${storeMediaType}:${credit.tmdbID}`);
         });
       }
     }
@@ -5964,36 +6298,27 @@ async function searchItemsWithLookup(items, searchQuery, fields, db, lookupFlow 
     }
   }
 
-  // Map the tmdbIDs to media from mediaCache in chunks
-  const tmdbIDArray = Array.from(tmdbIDs);
+  // Map the media keys to media from mediaCache (indexed once instead of a linear search per ID)
+  if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
+  const mediaByKey = new Map();
+  for (const media of mediaCache.values()) {
+    mediaByKey.set(`${media.mediaType}:${media.tmdbID}`, media);
+  }
+
   const results = [];
-  const mediaArray = Array.from(mediaCache.values());
-
-  const idMapChunkSize = 100;
-  for (let i = 0; i < tmdbIDArray.length; i += idMapChunkSize) {
-    // Check for abort signal
-    if (signal?.aborted) throw new DOMException("Search aborted", "AbortError");
-
-    const idMapChunk = tmdbIDArray.slice(i, i + idMapChunkSize);
-
-    for (const tmdbID of idMapChunk) {
-      const media = mediaArray.find(m => m.tmdbID === tmdbID);
-      if (media) results.push(media);
-    }
-
-    // Yield to UI after each chunk
-    if (i + idMapChunkSize < tmdbIDArray.length) {
-      await yieldToUI();
-    }
+  for (const key of mediaKeys) {
+    const media = mediaByKey.get(key);
+    if (media) results.push(media);
   }
 
   return results;
 }
 
 /**
- * UI: Helper template for list icons
- * @param {*} imdbID 
- * @returns 
+ * Clones the cached list-icon template (favourites/watched/watchlist/collection) and sets
+ * each icon's state for a title.
+ * @param {string} imdbID - IMDb ID of the title.
+ * @returns {HTMLElement} The icon row element (an empty div if the template is missing).
  */
 function createTopRowIcons(imdbID) {
   if (!iconFragment) {
@@ -6006,6 +6331,14 @@ function createTopRowIcons(imdbID) {
   return clone;
 }
 
+/**
+ * Toggles a core list membership when a list icon is clicked. Updates the UI
+ * optimistically, persists the change, updates mediaCache and all icon rows of the title,
+ * and reverts the UI on failure.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - The clicked .icon-container (data-list-type, data-state).
+ * @returns {Promise<void>}
+ */
 async function handleIconClick(_event, element) {
   const icon = element;
   const container = icon.closest('[data-imdbid]');
@@ -6075,11 +6408,11 @@ async function handleIconClick(_event, element) {
 }
 
 /**
- * UI: Create placeholder SVGs if no image is available ### refactor (profile part not used anymore)
- * @param {*} width 
- * @param {*} height 
- * @param {*} type 
- * @returns 
+ * Returns an SVG placeholder for missing images.
+ * @param {number} width - Width in px.
+ * @param {number} height - Height in px.
+ * @param {'poster'|'profile'} [type='profile'] - Poster (filmy logo) or profile silhouette.
+ * @returns {string} SVG markup.
  */
 function createPlaceholderSVG(width, height, type = 'profile') {
   if (type === 'poster') {
@@ -6093,6 +6426,10 @@ function createPlaceholderSVG(width, height, type = 'profile') {
   }
 }
 
+/**
+ * Builds the reusable list-icon row template (iconFragment) used by createTopRowIcons.
+ * @returns {Promise<void>}
+ */
 async function initializeIcons() {
   const container = document.createElement('div');
   // Get the preferred display order 
@@ -6116,6 +6453,12 @@ async function initializeIcons() {
   iconFragment = container.firstElementChild;
 }
 
+/**
+ * Updates state, color and tooltip text of every list icon in a container from the title's
+ * list membership in mediaCache.
+ * @param {HTMLElement} iconsContainer - Element containing .icon-container elements.
+ * @param {string} imdbID - IMDb ID of the title.
+ */
 function updateIconStates(iconsContainer, imdbID) {
   const mediaData = mediaCache.get(imdbID);
 
@@ -6153,9 +6496,11 @@ function updateIconStates(iconsContainer, imdbID) {
 }
 
 /**
- * UI: Template for displaying Ratings
- * @param {*} mediaData 
- * @returns 
+ * Builds the ratings pills (IMDb, TMDB, Metacritic, Rotten Tomatoes) with links to each
+ * site. Metacritic/RT URLs are derived from the normalized title with a table of known
+ * exceptions.
+ * @param {Object} mediaData - Media record.
+ * @returns {string} HTML markup.
  */
 function generateRatingsHtml(mediaData) {
 
@@ -6311,6 +6656,12 @@ function generateRatingsHtml(mediaData) {
   `;
 }
 
+/**
+ * Builds the custom-lists menu for a title's tooltip, marking the lists it belongs to.
+ * @param {Object} mediaData - Media record (uses .lists and .imdbID).
+ * @param {Object[]} customListsMeta - Custom list metadata ({list, label}).
+ * @returns {string} HTML markup (<ul class="ttip-lists">).
+ */
 function generateCustomListsHtml(mediaData, customListsMeta) {
   const mediaLists = mediaData.lists || {};
   if (!customListsMeta || customListsMeta.length === 0) {
@@ -6328,6 +6679,10 @@ function generateCustomListsHtml(mediaData, customListsMeta) {
   return html;
 }
 
+/**
+ * Re-renders the custom-lists menu inside already created tooltips.
+ * @param {?string} [imdbID=null] - Only update this title's card; all cards when null.
+ */
 function refreshCustomListsInTooltips(imdbID = null) {
   // If imdbID is provided, only update that specific card
   const selector = imdbID ? 
@@ -6358,15 +6713,21 @@ function refreshCustomListsInTooltips(imdbID = null) {
 }
 
 /**
- * UI: Generate tooltip for movie cards in grid
- * @param {*} mediaData 
- * @returns 
+ * Builds the grid card hover tooltip: title line, certification/runtime/year/country,
+ * genres, ratings, plot, credits, awards, box office, JustWatch/custom/trailer links and
+ * the action buttons (note, lists, delete, refresh).
+ * @param {Object} mediaData - Media record from mediaCache.
+ * @returns {string} HTML markup.
  */
 function generateTooltip(mediaData) {
 
   // const imdbID = mediaData.imdbID;
 
-  // Format arrays for display (comma-separated)
+  /**
+   * @param {*} array - Values to display.
+   * @param {string} label - Field label.
+   * @returns {string} "<label>: a, b" markup ("N/A" when empty, a warning if not an array).
+   */
   const formatArrayForDisplay = (array, label) => {
     // Check if the input is an array
     if (!Array.isArray(array)) {
@@ -6379,7 +6740,10 @@ function generateTooltip(mediaData) {
       : `<span><strong>${label}:</strong> N/A</span>`;
   };
 
-  // Convert an array to a sorted, comma-separated string
+  /**
+   * @param {string[]} array - Values (sorted in place).
+   * @returns {string} Sorted, comma-separated values or "N/A".
+   */
   const arrayToCommaSeparatedString = (array) => {
     if (Array.isArray(array) && array.length > 0) {
       return array.sort((a, b) => a.localeCompare(b)).join(", ");
@@ -6422,7 +6786,10 @@ function generateTooltip(mediaData) {
   // Build the tooltip list content.
   let tooltipListContent = '';
 
-  // Common function to generate trailer links
+  /**
+   * @param {Object[]} trailers - YouTube trailer objects.
+   * @returns {string} Tooltip link list items that open the trailer player.
+   */
   const generateTrailerLinks = (trailers) => trailers
     .map(trailer => `
     <li class="url-line">
@@ -6708,9 +7075,9 @@ function throttle(func, limit) {
 }
 
 /**
- * Builds a letter index for efficient jumping
- * @param {Array} records - The filtered records to index
- * @returns {Map} A map of first letters to record indices
+ * Builds an index from first letter (digits grouped as "0") to the first position in
+ * filteredRecords, used for letter jumping.
+ * @returns {?Map<string, number>} Letter -> index map, or null when there are no records.
  */
 function buildLetterIndex() {
   if (!filteredRecords || filteredRecords.length === 0) return null;
@@ -7141,9 +7508,12 @@ function loadPaginatedRecords(startIdx = 0) {
 }
 
 /**
- * Renders media cards in the grid
- * @param {Array} records - The records to render
- * @param {string} mode - The render mode: 'append', 'prepend', or 'reset'
+ * Renders media cards into the grid (skipping titles already rendered unless mode is
+ * 'reset'). At maximum card size tooltips and list icons are created immediately;
+ * otherwise cards are flagged for lazy tooltip creation. In 'prepend' mode the scroll
+ * position is kept stable.
+ * @param {Object[]} records - Media records to render.
+ * @param {'append'|'prepend'|'reset'} [mode='append'] - Where to insert the cards.
  */
 function renderCard(records, mode = 'append') {
   // LOW #2: Validate mode parameter to prevent unexpected behavior
@@ -7335,7 +7705,15 @@ function renderCard(records, mode = 'append') {
 }
 
 /**
- * Sort Records
+ * Returns a sorted copy of the records.
+ * - title: normalized, article-insensitive, with franchise/sequel awareness (keeps the
+ *   search ranking order while a search query is active)
+ * - year: full release date, falling back to numericYear (items without a year go last)
+ * - imdb / tmdb / metascore / rt / weighted: numeric rating value
+ * @param {Object[]} media - Records to sort.
+ * @param {'title'|'year'|'imdb'|'tmdb'|'metascore'|'rt'|'weighted'} [criteria='title'] - Sort key.
+ * @param {boolean} [ascending=true] - Sort direction.
+ * @returns {Object[]} Sorted copy (empty array for empty input).
  */
 function sortRecords(media, criteria = "title", ascending = true) {
   if (!Array.isArray(media) || media.length === 0) {
@@ -7451,7 +7829,11 @@ function isSameMovieFranchise(titleA, titleB) {
   const cleanA = titleA.toLowerCase().replace(/[^\w\s]/g, "");
   const cleanB = titleB.toLowerCase().replace(/[^\w\s]/g, "");
   
-  // Extract base name and sequel number
+  /**
+   * @param {string} title - Cleaned, lowercased title.
+   * @returns {{baseName:string, sequelNum:number}} Base name and sequel number (0 if none;
+   *   roman numerals converted).
+   */
   const extractInfo = (title) => {
     // Match patterns like "Title 2", "Title II", "Title Part 2", etc.
     const match = title.match(/^(.+?)(?:\s+(?:part\s+)?(\d+|[ivx]+))?(?:\s*:.*)?$/i);
@@ -7502,8 +7884,10 @@ function isSameMovieFranchise(titleA, titleB) {
 }
 
 /**
- * Enhanced function to convert roman numerals and spelled-out numbers to digits.
- * This applies to both standalone numerals and those with prefixes like "Part" or "Episode".
+ * Converts roman numerals (I-X) and spelled-out numbers (one-ten) after "part"/"episode",
+ * and standalone roman numerals after a space, to digits. Lowercases the title.
+ * @param {string} title - Title to normalize.
+ * @returns {string} Normalized, lowercased title.
  */
 function normalizeNumerals(title) {
   if (!title) return "";
@@ -7567,20 +7951,35 @@ function normalizeNumerals(title) {
   return normalizedTitle;
 }
 
-/* Normalization for names/keywords – no roman numerals or fraction replacements */
+/**
+ * Normalization for person names and keywords: lowercase, strip diacritics, trim.
+ * No numeral or fraction replacements.
+ * @param {*} name - Name (converted to string).
+ * @returns {string} Normalized name.
+ */
 function normalizeForName(name) {
   if (typeof name !== "string") name = String(name);
   return name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 
 /**
- * Normalize titles for sorting (removes leading articles)
+ * Normalizes a title for sorting: removes a leading article (the/a/an) and applies
+ * normalizeForSearch.
+ * @param {string} title - Title.
+ * @returns {string} Sort key.
  */
 function normalizeForSort(title) {
   const withoutArticles = title.replace(/^(the |a |an )/i, "");
   return normalizeForSearch(withoutArticles);
 }
 
+/**
+ * Normalizes a title for searching: numerals to digits, lowercase, no diacritics,
+ * fractions/superscripts expanded, most punctuation removed, whitespace collapsed and
+ * letters separated from digits ("A2" -> "a 2").
+ * @param {string} title - Title.
+ * @returns {string} Normalized search string.
+ */
 function normalizeForSearch(title) {
   // Replace Roman numerals (for titles only)
   title = normalizeNumerals(title);
@@ -7698,8 +8097,10 @@ function addEmptySpaceToNav(navPanel) {
 }
 
 /**
- * Initialize the navigation panel and attach event listeners.
- * @param {HTMLElement} navPanel - The navigation panel element.
+ * Initializes the A-Z quick navigation panel (letter links, spacers, slide-in on mouse
+ * near the left edge and auto-scroll on hover).
+ * @param {string} [navPanelId="navPanel"] - ID of the navigation panel element.
+ * @throws {Error} If the panel element does not exist.
  */
 function initializeNavPanel(navPanelId = "navPanel") {
   const navPanel = document.getElementById(navPanelId);
@@ -7714,6 +8115,12 @@ function initializeNavPanel(navPanelId = "navPanel") {
   navPanel.addEventListener("mousemove", (event) => handleMouseOverNav(navPanel, event));
 }
 
+/**
+ * Normalizes a title into the stored `dataTitle` form: lowercase, no diacritics or
+ * parentheses, superscripts expanded, unwanted punctuation removed, whitespace collapsed.
+ * @param {string} input - Title.
+ * @returns {string} Normalized string ("" for non-string input).
+ */
 function normalizeString(input) {
   if (!input || typeof input !== "string") return "";
 
@@ -7778,8 +8185,10 @@ async function getSortedGenres(db) {
 }
 
 /**
- * DB: Load Genres from indexedDB into cache
- * @param {*} db 
+ * Loads genres into genreCache. Fetches them from TMDB when the store is empty or older
+ * than 30 days; otherwise (or when the fetch fails) reads them from IndexedDB.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<void>}
  */
 async function populateGenres(db) {
   const lastUpdatedKey = "genres_lastUpdated"; // Key to track last update in localStorage
@@ -7789,24 +8198,22 @@ async function populateGenres(db) {
     // Check if the genres store is empty
     const isEmpty = await isGenresStoreEmpty(db);
 
-    if (isEmpty) {
-      console.warn("Genres store is empty. Fetching genres...");
-      await fetchAndUpdateGenres(db);
-      localStorage.setItem(lastUpdatedKey, currentDate.toISOString());
-    } else {
-      // Check timestamp in localStorage
-      const storedTimestamp = localStorage.getItem(lastUpdatedKey);
-      const isOutdated =
-        !storedTimestamp || (currentDate - new Date(storedTimestamp)) > 30 * 24 * 60 * 60 * 1000;
+    // Check timestamp in localStorage
+    const storedTimestamp = localStorage.getItem(lastUpdatedKey);
+    const isOutdated =
+      !storedTimestamp || (currentDate - new Date(storedTimestamp)) > 30 * 24 * 60 * 60 * 1000;
 
-      if (isOutdated) {
-        console.log("Genres data is stale. Fetching updated genres...");
-        await fetchAndUpdateGenres(db);
-        localStorage.setItem(lastUpdatedKey, currentDate.toISOString());
-      } else {
-        // console.log("Genres data is up-to-date. Loading from IndexedDB...");
-        genreCache = await getSortedGenres(db); // Load genres from IndexedDB into cache
-      }
+    let fetched = false;
+    if (isEmpty || isOutdated) {
+      console.log(isEmpty ? "Genres store is empty. Fetching genres..." : "Genres data is stale. Fetching updated genres...");
+      fetched = await fetchAndUpdateGenres(db);
+      // Only remember the update when it succeeded, so a failed fetch is retried next time
+      if (fetched) localStorage.setItem(lastUpdatedKey, currentDate.toISOString());
+    }
+
+    if (!fetched) {
+      // Up to date, or the fetch failed (offline, missing key): use what is stored in IndexedDB
+      genreCache = await getSortedGenres(db);
     }
 
     // console.log("Genre cache initialized:", genreCache);
@@ -7838,11 +8245,17 @@ async function isGenresStoreEmpty(db) {
 }
 
 /**
- * Fetch and update genres from TMDB API.
- * @param {IDBDatabase} db - The IndexedDB instance.
+ * Fetches TMDB movie and TV genre lists, merges them (movie names win on ID conflicts),
+ * updates genreCache and replaces the contents of the 'genres' store.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<boolean>} true on success, false if fetching or saving failed.
  */
 async function fetchAndUpdateGenres(db) {
 
+  /**
+   * @param {string} endpoint - TMDB genre endpoint, e.g. "genre/movie/list".
+   * @returns {Promise<Array<{id:number,name:string}>>} Genres.
+   */
   async function fetchGenresFromAPI(endpoint) {
     const url = `${tmdbApiBaseUrl}${endpoint}?api_key=${apiKeyManager.getTmdbKey()}`;
     try {
@@ -7916,10 +8329,10 @@ async function fetchAndUpdateGenres(db) {
       store.put(genre);
     });
 
-    return new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       transaction.oncomplete = () => {
         console.log("Populated 'genres' store with resolved and sorted movie and TV genres.");
-        resolve();
+        resolve(true);
       };
 
       transaction.onerror = (event) => {
@@ -7929,14 +8342,18 @@ async function fetchAndUpdateGenres(db) {
     });
   } catch (error) {
     console.error("Error fetching or updating genres:", error.message);
+    return false;
   }
 }
 
 /**
- * Delete record and its associated data from IndexedDB.
+ * Deletes a title and its associated data (links, lists, ratings, details, credits,
+ * keywords, genres, release dates / episodes), removes its card and cache entry and
+ * updates filters and counters.
  * @param {string} imdbID - The IMDb ID of the media to delete.
- * @param {string} mediaType - The type of media ('movie' or 'tv').
- * @param {Object} db - The IndexedDB instance.
+ * @param {'movie'|'tv'} mediaType - Media type.
+ * @param {IDBDatabase} db - Open database.
+ * @returns {Promise<void>}
  */
 async function deleteRecord(imdbID, mediaType, db) {
   try {
@@ -7944,12 +8361,18 @@ async function deleteRecord(imdbID, mediaType, db) {
     const mediaStore = mediaType === 'tv' ? 'series' : 'movies';
 
     // Start a transaction for the appropriate stores
-    const transaction = db.transaction([mediaStore, "links", "lists"], "readwrite");
+    const transaction = db.transaction([mediaStore, "links", "lists", "ratings"], "readwrite");
     const mediaStoreObj = transaction.objectStore(mediaStore);
     const linksStore = transaction.objectStore("links");
     const listsStore = transaction.objectStore("lists");
+    const ratingsStore = transaction.objectStore("ratings");
 
-    // Helper function to delete all entries for a specific store and IMDb ID
+    /**
+     * Deletes all records of a store whose imdbID index matches the title.
+     * @param {IDBObjectStore} store - Store with an "imdbID" index.
+     * @param {string} storeName - Store name (for logging).
+     * @returns {Promise<void>}
+     */
     const deleteEntriesByImdbID = async (store, storeName) => {
       return new Promise((resolve, reject) => {
         const index = store.index("imdbID"); // Assuming an index on imdbID exists
@@ -7991,7 +8414,8 @@ async function deleteRecord(imdbID, mediaType, db) {
     // Step 2: Delete all associated links and lists
     await Promise.all([
       deleteEntriesByImdbID(linksStore, "links"),
-      deleteEntriesByImdbID(listsStore, "lists")
+      deleteEntriesByImdbID(listsStore, "lists"),
+      deleteEntriesByImdbID(ratingsStore, "ratings")
     ]);
 
     // Step 3: Delete associated data from type-specific stores
@@ -8000,14 +8424,18 @@ async function deleteRecord(imdbID, mediaType, db) {
       await deleteFromRelatedStores(db, imdbID, [
         "movie_details",
         "movie_credits",
-        "movie_keywords"
+        "movie_keywords",
+        "movie_genres",
+        "release_dates"
       ]);
     } else if (mediaType === 'tv') {
       // Delete from series-specific stores
       await deleteFromRelatedStores(db, imdbID, [
         "series_details",
         "series_credits",
-        "series_keywords"
+        "series_keywords",
+        "series_genres",
+        "series_episodes"
       ]);
     }
 
@@ -8043,10 +8471,12 @@ async function deleteRecord(imdbID, mediaType, db) {
 }
 
 /**
- * Helper function to delete data from related stores using the tmdbID
- * @param {Object} db - The IndexedDB instance
- * @param {string} imdbID - The IMDb ID of the media
- * @param {Array} storeNames - Array of store names to delete from
+ * Deletes rows belonging to a title from stores keyed by or indexed on tmdbID.
+ * Must be called before the title is removed from mediaCache (tmdbID is read from it).
+ * @param {IDBDatabase} db - Open database.
+ * @param {string} imdbID - IMDb ID of the title.
+ * @param {string[]} storeNames - Stores to clean up (missing stores are ignored).
+ * @returns {Promise<void>}
  */
 async function deleteFromRelatedStores(db, imdbID, storeNames) {
   try {
@@ -8138,8 +8568,9 @@ async function deleteFromRelatedStores(db, imdbID, storeNames) {
 
 
 /**
- * DB: Load all listStates from indexDb into cache for the current user
- * with improved username separation and DOM updates
+ * Loads the current user's list memberships from the 'lists' store into the `lists`
+ * property of every mediaCache entry and refreshes list icons in the DOM.
+ * @returns {Promise<void>}
  */
 async function loadListStates() {
   if (!userSettings?.username) {
@@ -8202,8 +8633,7 @@ async function loadListStates() {
 }
 
 /**
- * Update all list icons in the DOM to match current state
- * (Preserved from original code for DOM synchronization)
+ * Re-syncs the list icons of every rendered media card with mediaCache.
  */
 function updateListIconsInDOM() {
   document.querySelectorAll('.media-card').forEach(card => {
@@ -8217,6 +8647,12 @@ function updateListIconsInDOM() {
   });
 }
 
+/**
+ * Returns display config (symbolId, label, type) for a list, from listsMap or the built-in
+ * core list defaults; unknown lists get a generic custom-list config.
+ * @param {string} listName - List ID (core list name or custom list UUID).
+ * @returns {{symbolId:string, label:string, type:string}}
+ */
 function getListConfig(listName) {
   // First try user-specific config
   const listConfig = listsMap[listName];
@@ -8276,7 +8712,7 @@ async function getUserLists(username, listType = null) {
       lists.sort((a, b) => {
         if (a.type === 'core' && b.type !== 'core') return -1;
         if (a.type !== 'core' && b.type === 'core') return 1;
-        return a.label.localeCompare(b.label);
+        return (a.label || a.list || '').localeCompare(b.label || b.list || '');
       });
       resolve(lists);
     };
@@ -8284,6 +8720,15 @@ async function getUserLists(username, listType = null) {
   });
 }
 
+/**
+ * Creates a custom list in 'lists_metadata' with a generated UUID and adds it to listsMap.
+ * @param {string} username - Owner.
+ * @param {string} listName - Display label (must not be a core list name).
+ * @param {string} [description] - Description (defaults to "My {listName} list").
+ * @param {boolean} [isPublic=false] - Public flag (reserved for sharing).
+ * @returns {Promise<Object>} The created list metadata record.
+ * @throws {Error} If the name is reserved or the record cannot be added.
+ */
 async function createUserList(username, listName, description, isPublic = false) {
   // Validate the list name doesn't conflict with core lists
   if (isCoreList(listName)) {
@@ -8419,7 +8864,8 @@ async function deleteUserList(username, listId, type = 'custom') {
 }
 
 /**
- * Update watched icon with symbol approach using data-state
+ * Updates the watched filter button icon, tooltip and active class for its tri-state cycle.
+ * @param {'watched'|'unwatched'|'none'} state - Filter state.
  */
 function updateWatchedIcon(state) {
   const button = document.getElementById("watched-filter-icon");
@@ -8454,9 +8900,9 @@ function updateWatchedIcon(state) {
 }
 
 /**
- * updateActiveListsForWatched(state):
- * Updates the global activeLists array. For state "watched" or "unwatched",
- * it pushes the corresponding filter (with type "core"). For "none", it leaves watched-related filters out.
+ * Replaces the watched/unwatched entry in activeLists according to the filter state
+ * ('none' removes it).
+ * @param {'watched'|'unwatched'|'none'} state - Filter state.
  */
 function updateActiveListsForWatched(state) {
   activeLists = activeLists.filter(item =>
@@ -8470,6 +8916,13 @@ function updateActiveListsForWatched(state) {
   // "none": do nothing, meaning no watched filter.
 }
 
+/**
+ * Opens the Settings popup: profile selection/creation/deletion and icon, API keys, custom
+ * search URL, backup schedule and JustWatch region/providers. Fields auto-save.
+ * @param {Function} [onFirstProfileSavedCallback] - Called once the first profile has a
+ *   username, TMDB key and at least one OMDb key (completes the initial setup).
+ * @returns {Promise<void>}
+ */
 async function showSettingsPopup(onFirstProfileSavedCallback) {
   // --- Fetch ALL usernames for the profile dropdown ---
   let allUsernames = [];
@@ -8574,7 +9027,7 @@ async function showSettingsPopup(onFirstProfileSavedCallback) {
         </div>
 
         <span class="settings-separator" data-tooltip>
-          <span class="separator-text">Backup Schedule<span class="ttip-txt" data-tt-pos="bottom"<p>Enable for periodic backup of the whole indexedDB as .json.</p>
+          <span class="separator-text">Backup Schedule<span class="ttip-txt" data-tt-pos="bottom"><p>Enable for periodic backup of the whole indexedDB as .json.</p>
           <p>File will be stored in the browser's download folder.</p></span></span>
         </span>
         <div class="settings">
@@ -8658,6 +9111,12 @@ async function getAllUsernamesFromDB() {
   });
 }
 
+/**
+ * Fills the settings form from a settings object and loads the JustWatch providers grid
+ * when a username and TMDB key are available.
+ * @param {Object} settings - User settings.
+ * @param {boolean} [isFirstUser=false] - Initial setup (no profile yet).
+ */
 function loadUserSettingsDB(settings, isFirstUser = false) {
   // Ensure settings is an object, even if empty
   if (!settings || typeof settings !== 'object') {
@@ -8781,6 +9240,14 @@ function loadUserSettingsDB(settings, isFirstUser = false) {
   }
 }
 
+/**
+ * Wires all settings popup handlers: profile switch/add/delete, OMDb key add/delete, auto-save
+ * for TMDB key, search URL, backup, JustWatch fields, provider pills and user icon upload.
+ * @param {Object} currentSettingsRef - Settings object shown in the form (mutated on save/switch).
+ * @param {string[]} allUsernames - Existing profile names.
+ * @param {boolean} isFirstUser - Initial setup mode.
+ * @param {Function} [onFirstProfileSavedCallback] - See showSettingsPopup.
+ */
 function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUser, onFirstProfileSavedCallback) {
   const popupElement = document.getElementById('settings-form');
   if (!popupElement) {
@@ -8791,6 +9258,12 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
   let usernames = [...allUsernames]; // Local copy for managing dropdown state if needed
 
   // Define the delete profile handler as a named function for reuse
+  /**
+   * Confirms and deletes the selected profile, then switches to the next remaining profile
+   * (or reloads the app when none is left).
+   * @param {Event} event - Click event.
+   * @param {?boolean} [dynamicIsFirstUser=null] - Whether only one profile exists.
+   */
   const handleDeleteProfile = async (event, dynamicIsFirstUser = null) => {
     event.preventDefault();
     const profileSelect = document.getElementById('profilename');
@@ -8849,6 +9322,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
                 userSettings.username = nextUser;
                 localStorage.setItem('lastUsername', nextUser);
                 apiKeyManager.initialize(nextUserSettings);
+                reloadAfterSettingsClose = true;
 
                 // Close the current settings popup
                 const closeBtn = document.getElementById('settings-close');
@@ -8894,6 +9368,11 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     }
   });
 
+  /**
+   * Collects all form values for the selected profile, saves them, updates userSettings and
+   * the API key manager, completes first-time setup when possible and refreshes providers.
+   * @returns {Promise<void>}
+   */
   const updateAndSaveSettings = async () => {
     // console.log("updateAndSaveSettings triggered....");
 
@@ -9021,7 +9500,13 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     handleAddProfileInput(profileSelect, currentSettingsRef, isFirstUser, onFirstProfileSavedCallback);
   });
 
-  // Extract the profile switching logic to a reusable function
+  /**
+   * Loads another profile's settings into the form and makes it the active user.
+   * @param {string} selectedValue - Username to switch to.
+   * @param {HTMLSelectElement} profileSelect - Profile dropdown (reverted on failure).
+   * @param {Object} currentSettingsRef - Settings object shown in the form.
+   * @returns {Promise<void>}
+   */
   async function switchToProfile(selectedValue, profileSelect, currentSettingsRef) {
     console.log("Switching to profile: " + selectedValue);
     try {
@@ -9031,6 +9516,9 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
         Object.assign(currentSettingsRef, newSettings); // Update global appSettings reference
         userSettings.username = newSettings.username;
         localStorage.setItem('lastUsername', userSettings.username);
+        apiKeyManager.initialize(newSettings);
+        // Lists, customizations and records are per profile: reload the app when settings close
+        reloadAfterSettingsClose = true;
 
         // Load the newly fetched settings into the form
         // Pass false for isFirstUser, as we are switching to an existing user
@@ -9041,7 +9529,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
         profileSelect.value = currentSettingsRef.username; // Revert dropdown
       }
     } catch (error) {
-      showNotification("❌ Error switching profile: " + error.message || error, false);
+      showNotification("❌ Error switching profile: " + (error.message || error), false);
       profileSelect.value = currentSettingsRef.username; // Revert dropdown
     }
   }
@@ -9074,6 +9562,10 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
   // --- Listeners for Auto-Save Fields ---
   // TMDB Key (blur/enter)
   const tmdbInput = popupElement.querySelector('#tmdb-key');
+  /**
+   * Saves the settings when the TMDB key input lost focus and its value changed.
+   * @param {FocusEvent} event
+   */
   const handleTmdbSave = async (event) => {
     const newValue = event.target.value.trim();
     // Only save if value actually changed from what's in memory/settings obj
@@ -9092,6 +9584,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
   // JW Country/Type change
   const jwCountry = popupElement.querySelector('#justwatch-country');
   const jwType = popupElement.querySelector('#justwatch-type');
+  /** Saves settings after the JustWatch country/type changed (refreshes providers). */
   const handleJwDropdownChange = async () => {
     // updateAndSaveSettings reads values, saves, and triggers provider refresh inside if conditions met
     await updateAndSaveSettings();
@@ -9196,7 +9689,14 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     }
   });
 
-  // --- Handle Add Profile Input ---
+  /**
+   * Temporarily replaces the profile dropdown with a text input to create a new profile.
+   * Saves on Enter/blur, cancels on Escape or empty input.
+   * @param {HTMLSelectElement} selectElement - Profile dropdown.
+   * @param {Object} settingsRef - Settings object shown in the form.
+   * @param {boolean} isFirstUser - Initial setup mode.
+   * @param {Function} [callback] - First-profile callback.
+   */
   function handleAddProfileInput(selectElement, settingsRef, isFirstUser, callback) {
     if (!db) {
       console.error("Database not available for profile creation");
@@ -9222,6 +9722,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     }
 
     // Handle input field events
+    /** Validates the entered profile name, creates and activates the profile, refreshes the dropdown. */
     const handleProfileSave = async () => {
       const newProfileName = inputField.value.trim();
 
@@ -9319,6 +9820,8 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
 
         // Initialize API Key Manager with the new settings
         apiKeyManager.initialize(newSettings);
+        // Switching from an existing profile: reload the app for the new profile when settings close
+        if (!isFirstUser) reloadAfterSettingsClose = true;
 
         // Note: We don't call the callback here - it will be called when all required settings are present
         console.log("Profile created successfully. Please enter API keys to complete setup.");
@@ -9361,6 +9864,12 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     });
   }
 
+  /**
+   * Temporarily replaces the OMDb key dropdown with a text input; the entered key is added
+   * and saved on Enter/blur, Escape cancels.
+   * @param {HTMLSelectElement} omdbSelectElement - OMDb key dropdown.
+   * @param {Object} currentSettingsRef - Settings object shown in the form.
+   */
   function handleAddOmdbKeyInput(omdbSelectElement, currentSettingsRef) {
     const omdbKeySelect = document.getElementById("omdb-key");
     const selectWidth = window.getComputedStyle(omdbKeySelect).width;
@@ -9375,6 +9884,7 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
     omdbSelectElement.style.display = "none";
     newInput.focus();
 
+    /** Restores the dropdown and saves the entered key (if new and non-empty). */
     const finalizeOmdbAdd = async () => {
       const newKey = newInput.value.trim();
 
@@ -9443,6 +9953,10 @@ function setupSettingsEventListeners(currentSettingsRef, allUsernames, isFirstUs
   }
 }
 
+/**
+ * Rebuilds the OMDb key dropdown from settings.omdb_apikeys (plus an "Add Key..." entry).
+ * @param {Object} settings - Settings containing omdb_apikeys.
+ */
 function refreshOmdbKeyDropdownDB(settings) {
   const omdbKeyDropdown = document.getElementById('omdb-key');
   if (!omdbKeyDropdown) return; // Element might not be ready
@@ -9475,7 +9989,11 @@ function refreshOmdbKeyDropdownDB(settings) {
   }
 }
 
-// --- NEW DB Helper: Delete a user's settings ---
+/**
+ * Deletes a profile's record from 'user_settings'.
+ * @param {string} username - Profile to delete.
+ * @returns {Promise<void>}
+ */
 async function deleteUserSettingFromDB(username) {
   if (!db) throw new Error("Database not open");
   if (!username) throw new Error("Username required for deletion");
@@ -9495,7 +10013,11 @@ async function deleteUserSettingFromDB(username) {
   });
 }
 
-// --- Modify your existing getCurrentUserSettingsFromDB to accept username ---
+/**
+ * Reads a profile's settings record.
+ * @param {string} username - Profile name.
+ * @returns {Promise<?Object>} The settings, or null if the profile does not exist.
+ */
 async function getCurrentUserSettingsFromDB(username) { // Added username parameter
   if (!db) throw new Error("Database not open");
   if (!username) throw new Error("Username not set"); // Keep check
@@ -9514,6 +10036,11 @@ async function getCurrentUserSettingsFromDB(username) { // Added username parame
   });
 }
 
+/**
+ * Loads the current user's per-title customizations (custom poster/backdrop) into
+ * mediaSettingsCache ({imdbID: {type: value}}).
+ * @returns {Promise<Object|undefined>} The cache object.
+ */
 async function loadMediaSettings() {
   if (!userSettings?.username) {
     console.error("Cannot load media settings: Username not set.");
@@ -9552,7 +10079,12 @@ async function loadMediaSettings() {
   }
 }
 
-// Getter
+/**
+ * Returns a cached per-title customization.
+ * @param {string} imdbID - IMDb ID.
+ * @param {'poster'|'backdrop'} type - Customization type.
+ * @returns {?string} The stored value (image path), or null.
+ */
 function getMediaCustomization(imdbID, type) {
   return mediaSettingsCache[imdbID]?.[type] || null;
 }
@@ -9588,7 +10120,20 @@ function setMediaCustomization(imdbID, type, value) {
         timestamp: new Date().toISOString()
       };
 
-      await store.put(record);
+      // The store uses an autoIncrement key with a unique [username, imdbID, type] index, so an
+      // existing customization must be updated under its id (a plain put would violate the index).
+      const existingId = await new Promise((resolve, reject) => {
+        const req = store.index("username_imdbID_type").getKey([record.username, imdbID, type]);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      if (existingId !== undefined) record.id = existingId;
+
+      await new Promise((resolve, reject) => {
+        const req = store.put(record);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
       console.log(`Set ${type} for ${imdbID} in DB.`);
     } catch (error) {
       console.error(`Failed to update ${type} for ${imdbID} in DB:`, error);
@@ -9643,6 +10188,12 @@ function clearMediaCustomization(imdbID, type) {
   })();
 }
 
+/**
+ * Renders the JustWatch provider pills for the selected country (selected providers first)
+ * and toggles/saves provider selection on click.
+ * @param {Object[]} data - TMDB watch provider list.
+ * @param {Object} settings - Settings object holding justwatch_providers (mutated on click).
+ */
 function updateProviderGrid(data, settings) {
   const countryDropdown = document.getElementById('justwatch-country');
   const typeDropdown = document.getElementById('justwatch-type');
@@ -9757,6 +10308,13 @@ function updateProviderGrid(data, settings) {
   });
 }
 
+/**
+ * Fills the JustWatch country and type dropdowns from the (cached) TMDB provider list and
+ * renders the provider grid.
+ * @param {?Object} existingSettings - Settings to use (defaults to userSettings).
+ * @param {string} existingCountryCode - Fallback country code.
+ * @returns {Promise<void>}
+ */
 async function populateProvidersDropdown(existingSettings, existingCountryCode) {
   const countryDropdown = document.getElementById("justwatch-country");
   const typeDropdown = document.getElementById("justwatch-type");
@@ -9827,7 +10385,11 @@ async function populateProvidersDropdown(existingSettings, existingCountryCode) 
 }
 
 
-// Helper function to check whether stored data is stale
+/**
+ * @param {string|number|Date} timestamp - Time the data was stored.
+ * @param {number} maxAgeDays - Maximum age in days.
+ * @returns {boolean} true if the data is older than maxAgeDays.
+ */
 function isDataStale(timestamp, maxAgeDays) {
   const now = new Date();
   const storedTime = new Date(timestamp);
@@ -9835,7 +10397,12 @@ function isDataStale(timestamp, maxAgeDays) {
   return daysDifference > maxAgeDays;
 }
 
-// Function to fetch providers data using IndexedDB as a cache
+/**
+ * Returns TMDB watch provider data, cached in the 'provider_data' store for maxAgeDays.
+ * Falls back to stale cached data when fetching fails.
+ * @param {number} [maxAgeDays=7] - Cache lifetime.
+ * @returns {Promise<{results: Object[]}>} Provider data.
+ */
 async function getProvidersData(maxAgeDays = 7) {
   try {
     // Try to get the cached data from IndexedDB
@@ -9987,8 +10554,8 @@ function convertYearToNumber(media) {
 }
 
 /**
- * Populate Country dropdown with "origin_country" code from "movie_details" store
- * @param {*} movieDetails 
+ * Rebuilds the country filter dropdown from the origin_country codes of the given records.
+ * @param {Object[]} movieDetails - Media records (or details) with origin_country.
  */
 function populateCountryDropdown(movieDetails) {
   const dropdownMenu = document.getElementById("dropdown-menu-country");
@@ -10032,6 +10599,12 @@ function generateFinancialsHTML(mediaData) {
     return '';
   }
 
+  /**
+   * Classifies box office performance by revenue/budget ratio.
+   * @param {number} budget
+   * @param {number} revenue
+   * @returns {{class:string, label:string}} CSS class and label.
+   */
   function getPerformanceData(budget, revenue) {
     if ((!budget || budget <= 0) && (!revenue || revenue <= 0)) {
       return { class: 'performance-neutral', label: 'Financials not available' };
@@ -10093,6 +10666,12 @@ function generateFinancialsHTML(mediaData) {
   `;
 }
 
+/**
+ * Renders logos of production companies (movies) or networks (TV). Names contained in
+ * longer names are de-duplicated and entries without a logo are skipped.
+ * @param {Object} mediaData - Details record with production_companies / networks.
+ * @returns {string} HTML markup ("" when there is nothing to show).
+ */
 function generateCompaniesAndNetworksHTML(mediaData) {
   const includeWithoutLogo = false;
   const mediaType = mediaData.mediaType || (mediaData.first_air_date ? 'tv' : 'movie');
@@ -10213,12 +10792,14 @@ function generateCompaniesAndNetworksHTML(mediaData) {
 }
 
 /**
- * UI/DB/Cache: Detail View Functions
- * @param {*} mediaData 
- * @param {*} credits 
- * @param {*} peopleMap 
- * @param {*} keywords 
- * @returns 
+ * Builds the complete detail view HTML: poster, title/meta line, ratings, lists, plot,
+ * companies, financials, cast & crew cards, seasons, collection, keywords,
+ * recommendations/similar titles and notes/links sections.
+ * @param {Object} mediaData - Media record merged with its details.
+ * @param {Object[]} credits - Credit rows for the title.
+ * @param {Map<number,Object>} peopleMap - personID -> person record.
+ * @param {Object[]} keywords - Keyword records.
+ * @returns {string} HTML markup.
  */
 function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
 
@@ -10268,7 +10849,10 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
       .join(' ');
   };
 
-  // Helper: Convert an array to a comma‑separated string.
+  /**
+   * @param {string[]} array - Values (sorted in place).
+   * @returns {string} Sorted, comma-separated values or "N/A".
+   */
   const arrayToCommaSeparatedString = (array) => {
     if (Array.isArray(array) && array.length > 0) {
       return array.sort((a, b) => a.localeCompare(b)).join(", ");
@@ -10365,7 +10949,7 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
   // const number_of_episodes = mediaData.number_of_episodes || 0; // ### unused
   const seasons = mediaData.seasons || [];
   const status = mediaData.status || "N/A";
-  const lastAirDate = mediaData.last_air_date !== "N/A"
+  const lastAirDate = mediaData.last_air_date && mediaData.last_air_date !== "N/A"
     ? new Date(mediaData.last_air_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
     : "N/A";
 
@@ -10384,13 +10968,21 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
 
   const tvStatusHTML = isSeries ? `<span class="bullet"></span>${number_of_seasons} Season${number_of_seasons !== 1 ? 's' : ''}<span class="bullet"></span>${statusText}` : "";
 
-  // Date formatting utility functions (moved to this scope)
+  /**
+   * @param {?string} dateString - ISO date.
+   * @returns {string} Long US date (e.g. "May 1, 1970") or "N/A".
+   */
   const formatBirthday = (dateString) => {
     if (!dateString) return 'N/A';
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' });
   };
 
+  /**
+   * @param {?string} birthDate - ISO date of birth.
+   * @param {?string} deathDate - ISO date of death.
+   * @returns {string} " (died aged N)" or "" when either date is missing.
+   */
   const calculateAge = (birthDate, deathDate) => {
     if (!birthDate || !deathDate) return '';
     const birth = new Date(birthDate);
@@ -10399,6 +10991,11 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     return ` (died aged ${ageInYears})`;
   };
 
+  /**
+   * @param {?string} birthDate - ISO date of birth.
+   * @param {?string} deathDate - ISO date of death.
+   * @returns {string} "* birthday" plus "† deathday (died aged N)" markup.
+   */
   const formatDateWithIcons = (birthDate, deathDate) => {
     const formattedBirth = birthDate ? `* ${formatBirthday(birthDate)}` : '';
     const formattedDeath = deathDate
@@ -10407,6 +11004,13 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     return `${formattedBirth}${formattedDeath}`;
   };
 
+  /**
+   * Renders crew person cards (roles combined per person), anchoring the first card of each
+   * department with an id for department navigation.
+   * @param {Object[]} crewList - Grouped crew credits (with jobs[]).
+   * @param {Map<number,Object>} peopleMap - personID -> person record.
+   * @returns {string} HTML markup or "N/A".
+   */
   function generateCrewCards(crewList, peopleMap) {
     if (!Array.isArray(crewList) || crewList.length === 0) return "N/A";
 
@@ -10498,6 +11102,12 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     }).join("");
   }
 
+  /**
+   * Renders cast person cards with character names and a biography tooltip.
+   * @param {Object[]} castList - Sorted cast credits.
+   * @param {Map<number,Object>} peopleMap - personID -> person record.
+   * @returns {string} HTML markup or "N/A".
+   */
   function generateCastCards(castList, peopleMap) {
     if (!Array.isArray(castList) || castList.length === 0) return "N/A";
     return castList.map((credit) => {
@@ -10563,6 +11173,13 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     }).join("");
   }
 
+  /**
+   * Renders TMDB media cards (recommendations, similar, collection parts) linking to TMDB.
+   * @param {Object[]} mediaList - TMDB result objects.
+   * @param {boolean} [sort=true] - Sort by vote_average (descending).
+   * @param {'movie'|'tv'} [parentMediaType='movie'] - Media type when a result has none.
+   * @returns {string} HTML markup.
+   */
   function generateMediaCards(mediaList, sort = true, parentMediaType = 'movie') {
     const sortedRecords = sort ? sortRecordsByRating(mediaList) : mediaList;
     
@@ -10596,11 +11213,23 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     }).join("");
   }
 
+  /**
+   * Sorts TMDB results in place by vote_average, highest first.
+   * @param {Object[]} record - TMDB results.
+   * @returns {Object[]} The sorted array ([] for empty input).
+   */
   function sortRecordsByRating(record) {
     if (!Array.isArray(record) || record.length === 0) return [];
     return record.sort((a, b) => b.vote_average - a.vote_average); // Descending order by vote_average
   }
 
+  /**
+   * Renders poster or backdrop thumbnail cards (click to set poster / enlarge backdrop).
+   * @param {Object[]} imageList - TMDB image objects ({file_path, iso_639_1}).
+   * @param {'Poster'|'Backdrop'} type - Image type.
+   * @param {boolean} [sort=true] - Sort by language code.
+   * @returns {string} HTML markup.
+   */
   function generateImageCards(imageList, type, sort = true) {
     const sortedImages = sort
       ? imageList.sort((a, b) => (a.iso_639_1 || "").localeCompare(b.iso_639_1 || ""))
@@ -10637,6 +11266,11 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     }).join("");
   }
 
+  /**
+   * Renders video cards; YouTube cards get thumbnails with a quality fallback chain.
+   * @param {Object[]} videoArray - TMDB video objects.
+   * @returns {string} HTML markup.
+   */
   function generateVideoCards(videoArray) {
     const sortedVideos = sortVideos(videoArray);
     return sortedVideos.map(video => {
@@ -10700,6 +11334,11 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     }).join("");
   }
 
+  /**
+   * Sorts videos: trailers, then teasers, then others; alphabetical within each group.
+   * @param {Object[]} videos - TMDB video objects (sorted in place).
+   * @returns {Object[]} Sorted videos ([] for empty input).
+   */
   function sortVideos(videos) {
     if (!Array.isArray(videos) || videos.length === 0) return [];
     return videos.sort((a, b) => {
@@ -10711,7 +11350,12 @@ function generateDetailViewHtml(mediaData, credits, peopleMap, keywords) {
     });
   }
 
-  // Generate season cards
+  /**
+   * Renders season cards (skipping an empty season 0) that load episodes on click.
+   * @param {Object[]} seasons - TMDB season objects.
+   * @param {number} showId - TMDB series ID.
+   * @returns {string} HTML markup or "N/A".
+   */
   function generateSeasonCards(seasons, showId) {
     if (!Array.isArray(seasons) || seasons.length === 0) return "N/A";
 
@@ -10873,6 +11517,11 @@ const similarHTML = (mediaData.similar &&
     finalCrewCredits = [...creatorCredits, ...finalCrewCredits];
   }
 
+  /**
+   * Renders department quick links (with per-department counts) for the crew section.
+   * @param {Object[]} crewCredits - Grouped crew credits.
+   * @returns {string} HTML markup.
+   */
   function generateCrewQuicklinks(crewCredits) {
     // Fixed department order – adjust as needed.
     const departmentOrder = [ "Creator",
@@ -10991,6 +11640,16 @@ ${country}<span class="bullet"></span>${languages}${tvStatusHTML}
 }
 
 // === CREDIT PROCESSING ===
+/**
+ * Groups and orders credits for the detail view: directors, then writers, then all other
+ * crew by department/job priority; cast is sorted (and merged per actor for TV).
+ * Falls back to OMDb Director/Writer names when TMDB has none.
+ * @param {Object[]} credits - Credit rows.
+ * @param {Object} movieData - Media record (for fallbacks).
+ * @param {Map<number,Object>} peopleMap - personID -> person record.
+ * @param {'movie'|'tv'} mediaType - Media type.
+ * @returns {{orderedCrewCredits:Object[], castCredits:Object[]}}
+ */
 function processCredits(credits, movieData, peopleMap, mediaType) {
   const grouped = groupCrewCredits(credits);
   // Separate only directors and writers; everything else goes into "others"
@@ -11016,6 +11675,12 @@ function processCredits(credits, movieData, peopleMap, mediaType) {
 }
 
 // === GROUPING LOGIC ===
+/**
+ * Separates cast from crew and merges crew rows of the same person and department into one
+ * entry with a priority-sorted `jobs` list (and collected episode counts).
+ * @param {Object[]} credits - Credit rows.
+ * @returns {{crew:Object[], cast:Object[]}}
+ */
 function groupCrewCredits(credits) {
   const groups = new Map();
   const cast = [];
@@ -11073,6 +11738,11 @@ function groupCrewCredits(credits) {
 
 // === CATEGORIZATION ===
 // Now we separate only directors and writers; everything else goes into a single 'others' array.
+/**
+ * Splits grouped crew into directors, writers and everyone else.
+ * @param {Object[]} crew - Grouped crew entries.
+ * @returns {{directors:Object[], writers:Object[], others:Object[]}}
+ */
 function categorizeGroupedCredits(crew) {
   const directors = [];
   const writers = [];
@@ -11095,6 +11765,12 @@ function categorizeGroupedCredits(crew) {
 }
 
 /// === FALLBACK HANDLERS (INTEGRATED WITH GROUPING) ===
+/**
+ * Builds director entries from the OMDb Director field when no directing credits exist.
+ * @param {Object[]} existingDirectors - Directors from credits.
+ * @param {Object} movieData - Media record.
+ * @returns {Object[]} Directors.
+ */
 function handleDirectorFallbacks(existingDirectors, movieData) {
   if (existingDirectors.length > 0 || !movieData.Director) return existingDirectors;
 
@@ -11112,6 +11788,12 @@ function handleDirectorFallbacks(existingDirectors, movieData) {
   }));
 }
 
+/**
+ * Builds writer entries from the OMDb Writer field when no writing credits exist.
+ * @param {Object[]} existingWriters - Writers from credits.
+ * @param {Object} movieData - Media record.
+ * @returns {Object[]} Writers.
+ */
 function handleWriterFallbacks(existingWriters, movieData) {
   if (existingWriters.length > 0 || !movieData.Writer) return existingWriters;
 
@@ -11130,6 +11812,13 @@ function handleWriterFallbacks(existingWriters, movieData) {
 }
 
 // === SORTING ===
+/**
+ * Sorts crew entries in place by department priority, best job priority, popularity
+ * (directing/writing only) and name.
+ * @param {Object[]} credits - Grouped crew entries.
+ * @param {Map<number,Object>} peopleMap - personID -> person record.
+ * @returns {Object[]} The sorted array.
+ */
 function sortCrewSection(credits, peopleMap) {
   // Updated mapping for department ordering according to industry standards:
   // Directing:1, Writing:2, Production:3, Camera:4, Editing:5, Sound:6, Art:7, etc.
@@ -11189,6 +11878,14 @@ function sortCrewSection(credits, peopleMap) {
   });
 }
 
+/**
+ * Sorts cast by billing order, popularity and name. For TV, roles of the same actor are
+ * merged into one entry ("Character (episodes) / ...").
+ * @param {Object[]} castCredits - Cast rows.
+ * @param {Map<number,Object>} peopleMap - personID -> person record.
+ * @param {'movie'|'tv'} mediaType - Media type.
+ * @returns {Object[]} Sorted cast.
+ */
 function sortCastCredits(castCredits, peopleMap, mediaType) {
   // For movies, use the original sorting logic
   if (mediaType !== 'tv') {
@@ -11293,6 +11990,14 @@ function sortCastCredits(castCredits, peopleMap, mediaType) {
   });
 }
 
+/**
+ * Builds a TMDB image URL from a file path. Full URLs are returned unchanged (repairing
+ * malformed TMDB+Amazon URLs); missing paths return a placeholder SVG.
+ * @param {?string} filePath - TMDB file path (e.g. "/abc.jpg") or full URL.
+ * @param {'poster'|'backdrop'|'logo'|'still'|string} type - Image type (selects the default size).
+ * @param {string} [desiredSize] - TMDB size, e.g. "w500" or "original".
+ * @returns {string} Image URL, or placeholder SVG markup when filePath is missing.
+ */
 function buildTMDbImageUrl(filePath, type, desiredSize) {
   // Check if filePath is null, undefined, or "null" string
   if (!filePath || filePath === "null") {
@@ -11327,12 +12032,18 @@ function buildTMDbImageUrl(filePath, type, desiredSize) {
   return `https://image.tmdb.org/t/p/${size}${filePath}`;
 }
 
+/** Stops the backdrop slideshow and restarts the controls' inactivity timer. */
 function handleMouseActivity() {
   stopSlideshow();
   resetTimer();
 }
 
 // --- KEYSTROKE LISTENER CODE ---
+/**
+ * Keyboard handler of the backdrop modal: arrows navigate, Escape closes, Space starts the
+ * slideshow and any other key stops it.
+ * @param {KeyboardEvent} event
+ */
 function handleModalKeydown(event) {
   const modal = document.getElementById("imageModal");
   if (modal && !modal.classList.contains("hidden")) {
@@ -11370,15 +12081,30 @@ function handleModalKeydown(event) {
   }
 }
 
+/**
+ * Keyboard activity in the backdrop modal: shows the controls again. Space is left to
+ * handleModalKeydown (it starts the slideshow, which must not be stopped here).
+ * @param {KeyboardEvent} event
+ */
+function handleModalActivityKeydown(event) {
+  const modal = document.getElementById("imageModal");
+  if (!modal || modal.classList.contains('hidden') || event.key === ' ') return;
+  handleMouseActivity();
+}
+
+/** Registers the backdrop modal keyboard handler. */
 function addModalKeyListeners() {
   document.addEventListener("keydown", handleModalKeydown);
 }
 
+/** Removes the backdrop modal keyboard handler. */
 function removeModalKeyListeners() {
   document.removeEventListener("keydown", handleModalKeydown);
 }
 
-// --- MOUSE INACTIVITY / RESET TIMER CODE ---
+/**
+ * Shows the backdrop modal controls and fades them out again after `inactivityTime` ms.
+ */
 function resetTimer() {
   clearTimeout(mouseTimer); // Clear any existing timer
   const modal = document.getElementById("imageModal");
@@ -11526,12 +12252,8 @@ function openImageModal(filePath, imdbID, mediaType) {
     modal.addEventListener('mousemove', handleMouseActivity);
     modal.addEventListener('mouseenter', resetTimer);
     modal.addEventListener('click', handleMouseActivity);
-    document.addEventListener('keydown', function () {
-      // Only reset timer if the modal is visible
-      if (!modal.classList.contains('hidden')) {
-        handleMouseActivity();
-      }
-    });
+    // Named handler: re-adding the same function is a no-op, so repeated opens don't stack listeners
+    document.addEventListener('keydown', handleModalActivityKeydown);
     addModalKeyListeners();
 
     updateBackdropToggleState(imdbID, filePath, defaultFilePath);
@@ -11541,7 +12263,10 @@ function openImageModal(filePath, imdbID, mediaType) {
   }
 }
 
-// slideshow dissolve
+/**
+ * Cross-fades the backdrop modal to another backdrop using a temporary overlay image.
+ * @param {number} index - Index in currentBackdrops.
+ */
 function crossfadeToSlide(index) {
   const modal = document.getElementById("imageModal");
   const baseImg = document.getElementById("imageModalImage");
@@ -11584,7 +12309,7 @@ function crossfadeToSlide(index) {
   }
 }
 
-// Function to advance to the next image (wraps around to the first)
+/** Advances the slideshow to the next backdrop (wrapping around). */
 function nextSlide() {
   if (currentBackdropIndex < currentBackdrops.length - 1) {
     currentBackdropIndex++;
@@ -11595,6 +12320,7 @@ function nextSlide() {
   crossfadeToSlide(currentBackdropIndex);
 }
 
+/** Starts the backdrop slideshow (3s interval) and hides controls and cursor. */
 function startSlideshow() {
   if (slideshowInterval) return;
   // Remove any lingering dynamic overlay (if any)
@@ -11611,6 +12337,7 @@ function startSlideshow() {
   }
 }
 
+/** Stops the backdrop slideshow, finalizes any running cross-fade and shows the controls. */
 function stopSlideshow() {
   if (slideshowInterval) {
     clearInterval(slideshowInterval);
@@ -11632,7 +12359,7 @@ function stopSlideshow() {
   }
 }
 
-// sildeshow helper
+/** Hides the backdrop modal controls (used during the slideshow). */
 function hideControls() {
   document.getElementById("backdrop-counter").classList.add("hidden");
   document.getElementById("prev-backdrop").classList.add("hidden");
@@ -11642,7 +12369,10 @@ function hideControls() {
   if (closeBtn) { closeBtn.classList.add("hidden"); }
 }
 
-// sildeshow helper
+/**
+ * Shows the backdrop modal controls and updates counter and prev/next visibility.
+ * @param {number} index - Current backdrop index.
+ */
 function showControls(index) {
   const counterElement = document.getElementById("backdrop-counter");
   const prevButton = document.getElementById("prev-backdrop");
@@ -11678,11 +12408,21 @@ function showControls(index) {
   }
 }
 
-// Combined function to load all media data
+/**
+ * Loads everything the detail view needs for a title from IndexedDB.
+ * @param {number} tmdbID - TMDB ID.
+ * @param {'movie'|'tv'} [mediaType='movie'] - Media type (selects movie_* or series_* stores).
+ * @returns {Promise<{details:?Object, credits:Object[], peopleMap:Map<number,Object>, keywords:Object[]}>}
+ */
 async function loadMediaData(tmdbID, mediaType = 'movie') {
   // Determine store prefix based on media type
   const storePrefix = mediaType === 'tv' ? 'series' : 'movie';
   
+  /**
+   * Reads `{prefix}_{dataType}` for the title; keyword rows are resolved to names.
+   * @param {'details'|'credits'|'keywords'} dataType
+   * @returns {Promise<*>} Record (details) or array.
+   */
   async function fetchFromStore(dataType) {
     return new Promise((resolve, reject) => {
       const storeName = `${storePrefix}_${dataType}`;
@@ -11756,7 +12496,11 @@ async function loadMediaData(tmdbID, mediaType = 'movie') {
   }
 }
 
-// Given an array of personIDs, look up all person info from the "people" store.
+/**
+ * Looks up person records from the 'people' store.
+ * @param {number[]} personIDs - TMDB person IDs.
+ * @returns {Promise<Map<number,Object|undefined>>} personID -> record (undefined if missing).
+ */
 function getPeopleInfo(personIDs) {
   return new Promise((resolve, reject) => {
     if (!Array.isArray(personIDs) || personIDs.length === 0) {
@@ -11783,8 +12527,11 @@ function getPeopleInfo(personIDs) {
   });
 }
 
-// Given an array of keyword IDs, look up each keyword's full info from the "keywords" store.
-// Here each record in the keywords store contains "keywordID" and "name".
+/**
+ * Resolves keyword IDs to {id, name} objects from the 'keywords' store (unknown IDs are skipped).
+ * @param {number[]} keywordIDs - TMDB keyword IDs.
+ * @returns {Promise<Array<{id:number, name:string}>>}
+ */
 function getKeywordNames(keywordIDs) {
   return new Promise((resolve, reject) => {
     if (!Array.isArray(keywordIDs) || keywordIDs.length === 0) {
@@ -11813,6 +12560,10 @@ function getKeywordNames(keywordIDs) {
   });
 }
 
+/**
+ * Collapses an expanded season: resets the season card state and animates its episode cards out.
+ * @param {number} seasonNumber - Season number.
+ */
 function collapseSeasonEpisodes(seasonNumber) {
   // Remove expanded class from season card
   const seasonCard = document.querySelector(`.card.season[data-season="${seasonNumber}"]`);
@@ -11829,6 +12580,15 @@ function collapseSeasonEpisodes(seasonNumber) {
   });
 }
 
+/**
+ * Toggles the episode list of a season in the detail view. Episodes are read from
+ * 'series_episodes' or (when missing, or changed on TMDB since the last update more than
+ * 14 days ago) fetched first. Also filters cast/crew to the season.
+ * @param {number} showId - TMDB series ID.
+ * @param {number} seasonNumber - Season number.
+ * @param {string} imdbID - IMDb ID of the series.
+ * @returns {Promise<void>}
+ */
 async function loadSeasonEpisodes(showId, seasonNumber, imdbID) {
   const context = {
     db,
@@ -12063,6 +12823,12 @@ async function loadSeasonEpisodes(showId, seasonNumber, imdbID) {
   }
 }
 
+/**
+ * Builds episode cards (still, title, sXXeYY code, air date, rating, overview tooltip).
+ * @param {Object[]} episodes - Episode records.
+ * @param {number} seasonNumber - Season number.
+ * @returns {string} HTML markup.
+ */
 function generateEpisodeCards(episodes, seasonNumber) {
   // Determine the maximum number of digits needed for episode numbers
   const maxEpisodes = episodes.length;
@@ -12109,6 +12875,12 @@ function generateEpisodeCards(episodes, seasonNumber) {
   }).join("");
 }
 
+/**
+ * Inserts episode cards (sorted by episode number) right after their season card.
+ * @param {Object[]} episodes - Episode records.
+ * @param {number} showId - TMDB series ID.
+ * @param {number} seasonNumber - Season number.
+ */
 function renderEpisodeCards(episodes, showId, seasonNumber) {
   if (!episodes || episodes.length === 0) {
     showNotification('No episodes available for this season', false);
@@ -12168,6 +12940,12 @@ function renderEpisodeCards(episodes, showId, seasonNumber) {
   initCardTooltips();
 }
 
+/**
+ * Shows only the person cards credited in at least one episode of the season.
+ * @param {number} showId - TMDB series ID.
+ * @param {number} seasonNum - Season number.
+ * @returns {Promise<void>}
+ */
 async function filterCreditsForSeason(showId, seasonNum) {
   try {
     // Get all credits for this show
@@ -12218,6 +12996,13 @@ async function filterCreditsForSeason(showId, seasonNum) {
   }
 }
 
+/**
+ * Shows only the person cards credited in a specific episode.
+ * @param {number} showId - TMDB series ID.
+ * @param {number} seasonNum - Season number.
+ * @param {number} episodeNum - Episode number.
+ * @returns {Promise<void>}
+ */
 async function filterCreditsForEpisode(showId, seasonNum, episodeNum) {
   try {
     // Get all credits for this show
@@ -12264,6 +13049,7 @@ async function filterCreditsForEpisode(showId, seasonNum, episodeNum) {
   }
 }
 
+/** Shows all person cards again and resets the cast/crew section titles. */
 function resetCreditFilters() {
   // Show all credit cards
   document.querySelectorAll('.card.person').forEach(card => {
@@ -12293,7 +13079,11 @@ function parseTitleAndYear(input) {
   };
 }
 
-// UI: helper to format big numbers
+/**
+ * Formats an amount as abbreviated dollars ($1.2K, $3M, $1.5B).
+ * @param {number} num - Amount.
+ * @returns {string} Formatted amount.
+ */
 function formatAbbreviatedCurrency(num) {
   if (num === 0) return '$0';
   const absNum = Math.abs(num);
@@ -12308,7 +13098,11 @@ function formatAbbreviatedCurrency(num) {
   }
 }
 
-// UI: helper to esacpe special characters
+/**
+ * Escapes &, <, >, " and ' for safe insertion into HTML.
+ * @param {string} str - Raw text.
+ * @returns {string} Escaped text.
+ */
 function escapeHTML(str) {
   return str.replace(/[&<>"']/g, function (match) {
     const escapeChars = {
@@ -12322,6 +13116,12 @@ function escapeHTML(str) {
   });
 }
 
+/**
+ * Opens the YouTube player modal.
+ * @param {string} videoKey - YouTube video key.
+ * @param {boolean} [fromDetailView=false] - Opened from the detail view (otherwise the modal
+ *   is shown stand-alone over the grid).
+ */
 function openVideoModal(videoKey, fromDetailView = false) {
   const overlay = document.getElementById("popup-overlay");
   const popup = document.getElementById("popup");
@@ -12356,12 +13156,20 @@ function openVideoModal(videoKey, fromDetailView = false) {
   overlay.addEventListener("mousemove", handleVideoMouseMove);
 }
 
+/**
+ * Shows the video modal's close button on mouse movement.
+ * @param {MouseEvent} event
+ */
 function handleVideoMouseMove(event) {
   // Get close button within this modal
   const closeButton = event.currentTarget.querySelector(".close-modal[data-popup-type='video']");
   showCloseButton(closeButton);
 }
 
+/**
+ * Shows a close button and fades it out after 3.6s of inactivity.
+ * @param {?HTMLElement} button - Close button.
+ */
 function showCloseButton(button) {
   if (!button) return;
 
@@ -12377,6 +13185,14 @@ function showCloseButton(button) {
   }, 3600);
 }
 
+/**
+ * Checks (with a 3s timeout, cached per key) whether a YouTube video still exists by probing
+ * its thumbnail, and persists a changed status in the details store.
+ * @param {string} videoKey - YouTube video key.
+ * @param {Object} mediaData - Media record with videos.results.
+ * @param {'movie'|'tv'} mediaType - Media type.
+ * @returns {Promise<boolean>} true if the video is available.
+ */
 async function checkVideoThumbnail(videoKey, mediaData, mediaType) {
   if (videoStatusCache.has(videoKey)) return videoStatusCache.get(videoKey);
   const videoObj = mediaData.videos?.results?.find(v => v.key === videoKey);
@@ -12419,7 +13235,14 @@ async function checkVideoThumbnail(videoKey, mediaData, mediaType) {
   }
 }
 
-// Helper function to persist video status to database
+/**
+ * Persists a video's availability status (200/404) in the title's details record.
+ * @param {string} videoKey - YouTube video key.
+ * @param {number} status - HTTP-like status (200 or 404).
+ * @param {Object} mediaData - Media record (tmdbID).
+ * @param {'movie'|'tv'} mediaType - Media type.
+ * @returns {Promise<void>}
+ */
 async function updateVideoStatusInDatabase(videoKey, status, mediaData, mediaType) {
   try {
     const storePrefix = mediaType === 'tv' ? 'series' : 'movie';
@@ -12607,11 +13430,11 @@ async function saveUserSettingsToDB(settings, fieldsToUpdate = null) {
 }
 
 /**
- * UI: Detail View - Toggle custom backdrop 
- * @param {*} imdbID 
- * @param {*} filePath 
- * @param {*} defaultFilePath 
- * @returns 
+ * Configures the backdrop modal's toggle button: set the viewed backdrop as the title's
+ * custom backdrop, or revert to the default one.
+ * @param {string} imdbID - IMDb ID.
+ * @param {string} filePath - Backdrop currently shown.
+ * @param {string} defaultFilePath - The title's default backdrop.
  */
 function updateBackdropToggleState(imdbID, filePath, defaultFilePath) {
   if (!imdbID) {
@@ -12687,9 +13510,12 @@ function updateBackdropToggleState(imdbID, filePath, defaultFilePath) {
   }
 }
 
-// Updates the backdrop shown in the popup DOM.
-// When an overridePath is provided it uses that (typically the default file path),
-// otherwise it looks for the active custom backdrop in local storage.
+/**
+ * Updates the detail view backdrop (CSS variable --detail-backdrop) and refreshes the cache.
+ * @param {string} imdbID - IMDb ID.
+ * @param {string} [overridePath] - Backdrop to show; defaults to the custom backdrop, then the
+ *   title's default backdrop.
+ */
 function updateDetailBackdrop(imdbID, overridePath) {
   const popup = document.getElementById("popup");
   if (!popup) return;
@@ -12700,10 +13526,16 @@ function updateDetailBackdrop(imdbID, overridePath) {
     activeFilePath = media.defaultBackdrop || "";
   }
   popup.style.setProperty("--detail-backdrop", activeFilePath ? `url(${buildTMDbImageUrl(activeFilePath, "backdrop")})` : "none");
-  // updateMediaCard(imdbID, media.mediaType);
-  updateCache(imdbID, db, media.mediaType);
+  if (media) {
+    updateCache(imdbID, db, media.mediaType).catch(error => console.error("Failed to refresh cache after backdrop change:", error));
+  }
 }
 
+/**
+ * App entry point: opens the database, sets up handlers that don't depend on a user, loads
+ * core app data and either shows the first-run settings popup or completes initialization.
+ * @returns {Promise<void>}
+ */
 async function initializeApplication() {
   try {
     // 1. Open DB
@@ -12740,6 +13572,12 @@ async function initializeApplication() {
   }
 }
 
+/**
+ * Second initialization phase (requires a configured profile with API keys): applies user
+ * settings, loads customizations, icons, records, genres and list states and initializes
+ * all filters and the navigation panel.
+ * @returns {Promise<void>}
+ */
 async function completeInitialization() {
   // console.log("Running completeInitialization...");
   if (!userSettings || userSettings.requiresSetup) {
@@ -12788,7 +13626,14 @@ async function completeInitialization() {
   console.log("Application initialization complete.");
 }
 
-// Media action handlers
+/**
+ * Opens the detail view for the card containing `element`: loads details, credits, people
+ * and keywords, validates YouTube videos, fetches collection parts, renders the popup and
+ * preloads the backdrop.
+ * @param {Event|{preventDefault:Function, stopPropagation:Function}} event - Triggering event.
+ * @param {Element|{closest:Function}} element - Element inside a .media-card.
+ * @returns {Promise<void>}
+ */
 async function handleDetailView(event, element) {
   event.preventDefault();
   event.stopPropagation();
@@ -12981,6 +13826,12 @@ async function handleDetailView(event, element) {
   }
 }
 
+/**
+ * Asks for confirmation and deletes the title of the clicked card.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - Element inside a media card or detail view.
+ * @returns {Promise<void>}
+ */
 async function handleDeleteMedia(_event, element) {
   try {
     const { imdbID, mediaType, title } = getMediaInfo(element, 'delete');
@@ -12997,6 +13848,13 @@ async function handleDeleteMedia(_event, element) {
   }
 }
 
+/**
+ * Refreshes a title from TMDB/OMDb (see addTitle with isRefresh).
+ * @param {Event} _event - Triggering event (unused).
+ * @param {HTMLElement} element - Element inside a media card or detail view.
+ * @param {boolean} [forceRefresh=false] - Skip the TMDB changes check.
+ * @returns {Promise<void>}
+ */
 async function handleRefreshMedia(_event, element, forceRefresh = false) {
   try {
     // Get both imdbID and tmdbID if available
@@ -13019,6 +13877,12 @@ async function handleRefreshMedia(_event, element, forceRefresh = false) {
   }
 }
 
+/**
+ * Handles a click on a dropdown item: marks it active, closes the menu and applies the
+ * media type (search dropdown) or country selection.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - The clicked item (data-value).
+ */
 function handleDropdownSelection(_event, element) {
   const dropdownMenu = element.closest('.dropdown-menu, .dropdown-menu-country');
   if (!dropdownMenu) return;
@@ -13053,6 +13917,11 @@ function handleDropdownSelection(_event, element) {
   }
 }
 
+/**
+ * Sets the media type filter from the search category ("Movies", "Series", other = all) and
+ * re-runs filters/search.
+ * @param {string} value - Selected category.
+ */
 function handleMediaTypeSelection(value) {
   if (value === "Movies") {
     activeMediaType = "movie";
@@ -13074,12 +13943,22 @@ function handleMediaTypeSelection(value) {
   }
 }
 
+/**
+ * Applies a country filter ("All" disables it).
+ * @param {string} value - Country code.
+ */
 function handleCountrySelection(value) {
   activeCountry = value;
   applyFiltersAndSearch();
   updateFilterButtonState(document.getElementById("dropdown-button-country"));
 }
 
+/**
+ * Toggles the dropdown menu referenced by the element's data-dropdown attribute and
+ * closes all others.
+ * @param {Event} event - Click event.
+ * @param {HTMLElement} element - Dropdown button.
+ */
 function toggleDropdown(event, element) {
   event.preventDefault(); // Prevent default button behavior
   event.stopPropagation(); // Prevent event from bubbling up
@@ -13102,6 +13981,10 @@ function toggleDropdown(event, element) {
   }
 }
 
+/**
+ * Closes all dropdown menus and the custom list panel when clicking outside of them.
+ * @param {MouseEvent} event
+ */
 function closeDropdownsOutsideClick(event) {
   const clickedOnDropdown = event.target.closest('[data-dropdown]');
   const clickedInDropdown = event.target.closest('.dropdown-menu, .dropdown-menu-country, .customlist-dropdown-panel');
@@ -13120,6 +14003,10 @@ function closeDropdownsOutsideClick(event) {
   }
 }
 
+/**
+ * Initializes all [data-dropdown] buttons: hides their menus, sets ARIA attributes and
+ * wires toggle-on-click behavior.
+ */
 function setupDropdowns() {
   const dropdownButtons = document.querySelectorAll('[data-dropdown]');
 
@@ -13166,6 +14053,11 @@ function setupDropdowns() {
 
 }
 
+/**
+ * Logo click: jumps back to the first letter of the grid (re-rendering from the start) or
+ * scrolls to the top.
+ * @param {Event} event
+ */
 function handleLogoClick(event) {
   event.preventDefault();
   
@@ -13193,6 +14085,7 @@ function handleLogoClick(event) {
   }
 }
 
+/** Opens the settings popup. */
 function handleSettingsClick() {
   try {
     showSettingsPopup();
@@ -13202,6 +14095,7 @@ function handleSettingsClick() {
   }
 }
 
+/** Opens the About popup. */
 function handleAboutClick() {
   try {
     showAboutPopup();
@@ -13211,6 +14105,7 @@ function handleAboutClick() {
   }
 }
 
+/** Starts a manual database backup. */
 function handleBackupClick() {
   try {
     backupDatabase(db);
@@ -13220,6 +14115,9 @@ function handleBackupClick() {
   }
 }
 
+/**
+ * Adds the title typed into the search box ("Title [Year]") using the selected category.
+ */
 function handleAddEntry() {
   const searchInput = document.getElementById("search-input").value.trim();
   const selectedCategory = document.getElementById("selected-option").textContent;
@@ -13243,6 +14141,11 @@ function handleAddEntry() {
   addTitle(db, { title: normalizedTitle, year, category: mediaType });
 }
 
+/**
+ * Toggles a list filter button (core list or custom list) and re-applies filters.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - Filter button (data-list-name or id "{list}-filter-icon").
+ */
 function toggleListFilter(_event, element) {
   const listName = element.dataset.listName || element.id.replace('-filter-icon', '');
   const listConfig = getListConfig(listName);
@@ -13264,6 +14167,16 @@ function toggleListFilter(_event, element) {
   element.blur();
 }
 
+/**
+ * Adds a title to, or removes it from, a list for a user. Creates missing core list
+ * metadata on the fly and updates the list's item count. Updates media.lists
+ * optimistically and reverts on failure.
+ * @param {string} imdbID - IMDb ID.
+ * @param {string} listName - List ID (core list name or custom list UUID).
+ * @param {string} username - Owner.
+ * @returns {Promise<boolean>} The new membership state.
+ * @throws {Error} On missing parameters, unknown media/custom list or database errors.
+ */
 async function toggleListMembership(imdbID, listName, username) {
   if (!username || !imdbID || !listName) {
     throw new Error('Missing required parameters for list toggle');
@@ -13404,7 +14317,14 @@ async function toggleListMembership(imdbID, listName, username) {
   }
 }
 
-// Helper function to update list metadata counts
+/**
+ * Recounts a list's entries and stores itemCount/lastUpdated in its metadata record.
+ * Errors are logged, not thrown.
+ * @param {string} listName - List ID.
+ * @param {'core'|'custom'} listType - List type.
+ * @param {string} username - Owner.
+ * @returns {Promise<void>}
+ */
 async function updateListMetadataStats(listName, listType, username) {
   try {
     const transaction = db.transaction(['lists', 'lists_metadata'], 'readwrite');
@@ -13467,6 +14387,11 @@ async function updateListMetadataStats(listName, listType, username) {
   }
 }
 
+/**
+ * Cycles the watched filter: none -> watched -> unwatched -> none, and re-applies filters.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - Watched filter button (data-state).
+ */
 function cycleWatchedFilter(_event, element) {
   const currentState = element.dataset.state || "none";
   let newState;
@@ -13485,7 +14410,10 @@ function cycleWatchedFilter(_event, element) {
   applyFiltersAndSearch();
 }
 
-// Year sort toggle function
+/**
+ * Cycles the year sort: ascending -> descending -> title (A-Z), resets rating sort
+ * indicators and re-renders the grid from the start.
+ */
 function toggleYearSort() {
   const yearFilterButton = document.getElementById('year-filter-button');
   const ratingsFilterButton = document.getElementById('ratings-filter-button');
@@ -13535,12 +14463,17 @@ function toggleYearSort() {
   updateMatchCount();
 }
 
+/** Click handler of the year filter button (toggles the year sort). */
 function handleYearFilterButtonClick() {
 
     toggleYearSort();
   
 }
 
+/**
+ * Shows the genre/year/ratings filter panels on hover (desktop) or on tap (touch devices),
+ * keeping only one open at a time.
+ */
 function setupPanelHoverHandlers() {
   const panelConfigs = [
     { button: '#genre-filter-button', panel: '#genre-panel' },
@@ -13621,6 +14554,11 @@ function setupPanelHoverHandlers() {
   });
 }
 
+/**
+ * Registers a touchend handler for a filter icon (list filter or watched filter).
+ * @param {string} selector - CSS selector of the icon.
+ * @param {Function} handler - toggleListFilter or the watched filter handler.
+ */
 function setupFilterIconHandlers(selector, handler) {
   const el = document.querySelector(selector);
   if (!el) return;
@@ -13634,6 +14572,7 @@ function setupFilterIconHandlers(selector, handler) {
   }, { passive: false });
 }
 
+/** Wires the year range sliders and the grid size slider input handlers. */
 function setupInputChangeHandlers() {
   // Year slider inputs
   const yearRangeMin = document.getElementById('year-range-min');
@@ -13664,6 +14603,10 @@ function setupInputChangeHandlers() {
   }
 }
 
+/**
+ * Wires the search box: enables the add button, runs an abortable, debounced (300ms)
+ * search for the selected category and renders the results.
+ */
 function setupSearchInputHandlers() {
   const searchInput = document.getElementById("search-input");
   if (!searchInput) return;
@@ -13734,6 +14677,10 @@ function setupSearchInputHandlers() {
   });
 }
 
+/**
+ * Wires the hidden file inputs for database restore (reloads the app on success) and title
+ * import (.txt, .csv or .json -> import dialog).
+ */
 function setupFileInputHandlers() {
     // Restore file input handler
     const restoreFileInput = document.getElementById("restore-file");
@@ -13811,6 +14758,10 @@ function setupFileInputHandlers() {
   }
 }
 
+/**
+ * Opens the file picker for a database restore.
+ * @param {Event} event
+ */
 function handleRestoreClick(event) {
   event.preventDefault();
   event.stopPropagation();
@@ -13825,6 +14776,10 @@ function handleRestoreClick(event) {
   restoreFileInput.click();
 }
 
+/**
+ * Opens the file picker for a title import (or the settings popup if setup is incomplete).
+ * @param {Event} event
+ */
 function handleImportClick(event) {
   event.preventDefault();
 
@@ -13846,7 +14801,11 @@ function handleImportClick(event) {
   importFileInput.click();
 }
 
-// Populate dropdown with existing custom lists
+/**
+ * Fills the import dialog's list selector with the user's custom lists plus "No List" and
+ * "Add New List..." options.
+ * @returns {Promise<void>}
+ */
 async function populateListsDropdown() {
   const listSelector = document.getElementById('list-selector');
   if (!listSelector) {
@@ -13899,63 +14858,12 @@ async function populateListsDropdown() {
   }
 }
 
-// Create or update list metadata
-async function createOrUpdateListMetadata(listName, description) {
-  if (!listName || typeof listName !== 'string' || listName.trim() === '') {
-    return Promise.reject(new Error('Invalid list name'));
-  }
-
-  const transaction = db.transaction(["lists_metadata"], "readwrite");
-  const metadataStore = transaction.objectStore("lists_metadata");
-
-  return new Promise((resolve, reject) => {
-    // Use the correct key path format: [username, type, list]
-    const metadataKey = [userSettings.username, "custom", listName];
-
-    metadataStore.get(metadataKey).onsuccess = (event) => {
-      const metadata = event.target.result || {
-        username: userSettings.username,
-        type: "custom",
-        list: listName,
-        name: listName,
-        created: Date.now(),
-        avgRating: 0,
-        ratingsCount: 0
-      };
-
-      // Update or set description
-      metadata.description = description || `Custom list: ${listName}`;
-      metadata.lastUpdated = Date.now();
-
-      // Ensure all required fields are present
-      if (!metadata.username) metadata.username = userSettings.username;
-      if (!metadata.type) metadata.type = "custom";
-      if (!metadata.list) metadata.list = listName;
-      if (!metadata.avgRating) metadata.avgRating = 0;
-      if (!metadata.ratingsCount) metadata.ratingsCount = 0;
-
-      const putRequest = metadataStore.put(metadata);
-
-      putRequest.onsuccess = () => resolve();
-      putRequest.onerror = (error) => {
-        console.error('Error putting list metadata:', error);
-        reject(error);
-      };
-    };
-
-    metadataStore.get(metadataKey).onerror = (error) => {
-      console.error('Error getting list metadata:', error);
-      reject(error);
-    };
-
-    transaction.onerror = (error) => {
-      console.error('Transaction error:', error);
-      reject(error);
-    };
-  });
-}
-
-// Function to update the titles section of the dialog
+/**
+ * Splits imported titles into new titles (checkboxes, pre-selected) and titles already in
+ * the database, renders both columns and wires the dialog buttons.
+ * @param {Array<{imdbID:string, title?:string, year?:string}>} titles - Parsed titles.
+ * @returns {Promise<void>}
+ */
 async function updateTitlesInDialog(titles) {
   try {
     // Validate input
@@ -14044,7 +14952,12 @@ async function updateTitlesInDialog(titles) {
   }
 }
 
-// Setup the buttons and checkbox interactions
+/**
+ * Wires the import dialog's select-all toggle, add button and checkbox handlers (replacing
+ * previous listeners). The add button closes the dialog and starts batchAddTitles, creating
+ * the target list first if needed.
+ * @param {number} newTitlesCount - Number of new titles.
+ */
 function setupImportButtons(newTitlesCount) {
   // Set up toggle button
   const toggleButton = document.getElementById('toggle-selection');
@@ -14096,29 +15009,18 @@ function setupImportButtons(newTitlesCount) {
 
     if (selectedOption === 'new') {
       listName = document.getElementById('list-name').value.trim();
-      listDescription = document.getElementById('list-description').value.trim();
     } else {
-      // Use existing list
+      // Use existing list (ID), or a new list name added to the selector by the name field
       listName = selectedOption;
     }
+    listDescription = document.getElementById('list-description')?.value.trim() || '';
 
     // Close the popup before starting the import process
     closePopup('import-titles');
 
-    // Process the import
-    if (listName && listName !== "No List") {
-      // Create or update list metadata, then add titles
-      createOrUpdateListMetadata(listName, listDescription)
-        .then(() => batchAddTitles(selectedIDs, listName))
-        .catch(error => {
-          console.error('Error creating list metadata:', error);
-          // Still try to add titles even if metadata creation fails
-          batchAddTitles(selectedIDs, listName);
-        });
-    } else {
-      // Just add titles without a list
-      batchAddTitles(selectedIDs, "No List");
-    }
+    // Process the import. batchAddTitles resolves an existing list by ID or label and creates a
+    // new custom list (with a UUID) when none matches.
+    batchAddTitles(selectedIDs, listName || "No List", listDescription);
   });
 
   // Add checkbox change listeners
@@ -14140,7 +15042,7 @@ function setupImportButtons(newTitlesCount) {
   updateAddButtonText();
 }
 
-// Helper function to update add button text
+/** Updates the import add button label/state from the number of checked titles. */
 function updateAddButtonText() {
   const addButton = document.getElementById('import-add-selected');
   if (!addButton) return;
@@ -14160,6 +15062,11 @@ function updateAddButtonText() {
   }
 }
 
+/**
+ * Reverts a custom poster to the default in the detail view, cache and grid.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - The "Revert to Default" button.
+ */
 function handlePosterToggle(_event, element) {
   // Find the detail view that contains the poster
   const detailView = element.closest('.detail-view');
@@ -14196,6 +15103,11 @@ function handlePosterToggle(_event, element) {
   }
 }
 
+/**
+ * Shows the previous backdrop in the backdrop modal.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - The previous button.
+ */
 function handlePrevBackdrop(_event, element) {
   if (currentBackdropIndex > 0) {
     currentBackdropIndex--;
@@ -14203,10 +15115,8 @@ function handlePrevBackdrop(_event, element) {
     const rawFilePath = currentBackdrops[currentBackdropIndex];
     // Build the full URL for display
     document.getElementById('imageModalImage').src = buildTMDbImageUrl(rawFilePath, "backdrop");
-    document.getElementById('backdrop-counter').textContent =
-      `${currentBackdropIndex + 1}/${currentBackdrops.length}`;
-    document.getElementById('next-backdrop').style.display = 'block';
-    element.style.display = currentBackdropIndex > 0 ? 'block' : 'none';
+    // Counter and prev/next visibility (class based, like the rest of the modal controls)
+    showControls(currentBackdropIndex);
 
     // Retrieve the imdbID from the modal data attribute
     const modal = document.getElementById("imageModal");
@@ -14219,16 +15129,18 @@ function handlePrevBackdrop(_event, element) {
   }
 }
 
+/**
+ * Shows the next backdrop in the backdrop modal.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - The next button.
+ */
 function handleNextBackdrop(_event, element) {
   if (currentBackdropIndex < currentBackdrops.length - 1) {
     currentBackdropIndex++;
     const rawFilePath = currentBackdrops[currentBackdropIndex];
     document.getElementById('imageModalImage').src = buildTMDbImageUrl(rawFilePath, "backdrop");
-    document.getElementById('backdrop-counter').textContent =
-      `${currentBackdropIndex + 1}/${currentBackdrops.length}`;
-    document.getElementById('prev-backdrop').style.display = 'block';
-    element.style.display =
-      currentBackdropIndex < currentBackdrops.length - 1 ? 'block' : 'none';
+    // Counter and prev/next visibility (class based, like the rest of the modal controls)
+    showControls(currentBackdropIndex);
 
     const modal = document.getElementById("imageModal");
     const imdbID = modal.dataset.imdbid;
@@ -14285,6 +15197,7 @@ function getMediaInfo(element, buttonType = 'media') {
   };
 }
 
+/** Initializes the rating sliders once the ratings panel is visible (slider geometry needs layout). */
 function initializeRatingsOnVisibility() {
   const panel = document.getElementById("ratings-filter-panel");
   if (panel && !panel.classList.contains("hidden")) {
@@ -14295,11 +15208,12 @@ function initializeRatingsOnVisibility() {
   }
 }
 
-// Helper to determine context
+/** @returns {boolean} true if the popup currently shows a detail view. */
 function isFromDetailView() {
   return document.getElementById("popup").classList.contains("detail-view");
 }
 
+/** Positions and updates the value bubble of the grid size slider. */
 function updateGridSizeValue() {
   const size = parseInt(gridSizeSlider.value, 10);
   const sliderMin = parseInt(gridSizeSlider.min, 10);
@@ -14316,6 +15230,11 @@ function updateGridSizeValue() {
   gridSizeValue.style.left = valuePosition;
 }
 
+/**
+ * Applies the grid size slider value: sets the card width/scale CSS variables, toggles
+ * max-size mode, normalizes poster URLs and re-renders cards when crossing into max size
+ * (where tooltips are rendered eagerly).
+ */
 function updateGridSizeLayout() {
   const size = parseInt(gridSizeSlider.value, 10);
   const sliderMin = parseInt(gridSizeSlider.min, 10);
@@ -14449,7 +15368,9 @@ function updateGridSizeLayout() {
   }
 }
 
-// Helper function to get visible cards
+/**
+ * @returns {HTMLElement[]} Media cards within the viewport plus a 50% buffer above and below.
+ */
 function getVisibleCards() {
   const scrollTop = window.scrollY || window.pageYOffset;
   const viewportHeight = window.innerHeight;
@@ -14466,6 +15387,11 @@ function getVisibleCards() {
   });
 }
 
+/**
+ * Scrolls a horizontal card row so that a hovered card and its tooltip are fully visible.
+ * @param {MouseEvent} event - mouseenter event.
+ * @param {HTMLElement} card - Hovered card.
+ */
 function handleCardHover(event, card) {
   if (window.isAdjustingTooltipScroll) return;
 
@@ -14510,7 +15436,10 @@ function handleCardHover(event, card) {
   }, 50);
 }
 
-// When saving grid size
+/**
+ * Persists the grid card size in the user settings.
+ * @param {string|number} size - Card width in px.
+ */
 function saveGridSizePreference(size) {
   if (userSettings && userSettings.username) {
     userSettings.grid_size = parseInt(size, 10);
@@ -14522,6 +15451,10 @@ function saveGridSizePreference(size) {
   }
 }
 
+/**
+ * Applies the stored grid size preference (or the default size) to the slider and grid and
+ * computes the initial page size.
+ */
 function initializeGridSize() {
   // First check if the slider is already at default value
   const currentSliderValue = parseInt(gridSizeSlider.value, 10);
@@ -14580,7 +15513,9 @@ function initializeGridSize() {
   });
 }
 
-// Simplified initTooltips function
+/**
+ * Attaches the tooltip-positioning mouseenter handler to all detail view cards (idempotent).
+ */
 function initCardTooltips() {
   // Find all person cards
   const cards = document.querySelectorAll('.card');
@@ -14600,11 +15535,20 @@ function initCardTooltips() {
   });
 }
 
-// Define handler functions that can be removed later
+/**
+ * mouseenter handler for detail view cards (see handleCardHover).
+ * @this {HTMLElement}
+ * @param {MouseEvent} event
+ */
 function cardMouseEnterHandler(event) {
   handleCardHover(event, this);
 }
 
+/**
+ * Click on a season card: toggles its episode list.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} element - Season card (data-season, data-episodes, data-show-id, data-imdb-id).
+ */
 function handleSeasonCardClick(_event, element) {
   const episodeCount = parseInt(element.getAttribute('data-episodes') || '0');
   if (episodeCount <= 0) return; // Skip seasons with no episodes
@@ -14617,7 +15561,12 @@ function handleSeasonCardClick(_event, element) {
 
 }
 
-// Define the episode card click handler function
+/**
+ * Click on an episode card: filters cast/crew to that episode, or back to the season when
+ * clicked again.
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} card - Episode card (data-show-id, data-season, data-episode).
+ */
 function handleEpisodeCardClick(_event, card) {
   const showId = parseInt(card.getAttribute('data-show-id'));
   const seasonNum = parseInt(card.getAttribute('data-season'));
@@ -14642,6 +15591,10 @@ function handleEpisodeCardClick(_event, card) {
   }
 }
 
+/**
+ * Ratings button sort cycle: weighted rating descending -> ascending -> title (A-Z). Any
+ * active single-rating sort is reset to title first.
+ */
 function toggleWeightedRatingSort() {
   const ratingsFilterButton = document.getElementById('ratings-filter-button');
   const yearFilterButton = document.getElementById('year-filter-button');
@@ -14699,7 +15652,11 @@ function toggleWeightedRatingSort() {
   applyFiltersAndSearch(true);
 }
 
-// toggle rating sort - maybe reset thumbs too ### 
+/**
+ * Toggles sorting by a single rating (descending -> ascending -> off). 'ratings-filter'
+ * delegates to the weighted rating sort.
+ * @param {'imdb'|'tmdb'|'metascore'|'rt'|'ratings-filter'} ratingType - Rating to sort by.
+ */
 function toggleRatingSort(ratingType) {
   const ratingsFilterButton = document.getElementById('ratings-filter-button');
   const yearFilterButton = document.getElementById('year-filter-button');
@@ -14749,11 +15706,16 @@ function toggleRatingSort(ratingType) {
   applyFiltersAndSearch(true);
 }
 
+/**
+ * @param {string} ratingType - 'imdb', 'tmdb', 'metascore' or 'rt'.
+ * @returns {number} 1-based position of the rating's section in the ratings panel.
+ */
 function getRatingIconIndex(ratingType) {
   const indices = { 'imdb': 1, 'tmdb': 2, 'metascore': 3, 'rt': 4 };
   return indices[ratingType] || 1;
 }
 
+/** Opens the About popup (version, description, support links, attribution). */
 function showAboutPopup() {
   // Create content for the about popup
   const aboutContent = `
@@ -14798,17 +15760,18 @@ function showAboutPopup() {
 }
 
 /**
- * Unified function to close any popup/modal
- * @param {string} type - The type of popup to close ('about', 'detail', 'settings', 'video', 'image')
- * @param {Object} options - Additional options for specific popup types
+ * Closes a popup/modal and performs type-specific cleanup (detail view transition, video
+ * player stop, backdrop slideshow teardown, tooltip regeneration after JustWatch setting
+ * changes, ...).
+ * @param {string} type - Popup type ('about', 'detail', 'settings', 'video', 'image', 'note', 'import', ...).
+ * @param {Object} [options={}] - Type-specific options (onClose, initialJWConfig, fromDetailView).
  */
-
 function closePopup(type, options = {}) {
   const overlay = document.getElementById("popup-overlay");
   const popup = document.getElementById("popup");
   const contentContainer = popup?.querySelector(".popup-content");
 
-  // Common actions for most popups
+  /** Hides overlay and popup, resets popup markup/styles (except for the detail view) and re-enables page scrolling. */
   const commonCleanup = () => {
     if (overlay) overlay.classList.add("hidden");
     if (popup) popup.classList.add("hidden");
@@ -14895,10 +15858,21 @@ function closePopup(type, options = {}) {
     case 'settings': {
       commonCleanup();
 
+      // The active profile changed: all per-profile state must be reloaded
+      if (reloadAfterSettingsClose) {
+        reloadAfterSettingsClose = false;
+        window.location.reload();
+        break;
+      }
+
       // Check if JustWatch settings changed - with safe handling of undefined values
       const initialJWConfig = options.initialJWConfig || {};
 
-      // Safe comparison function that handles undefined values
+      /**
+       * @param {?Array} a
+       * @param {?Array} b
+       * @returns {boolean} true if both are equal arrays (element-wise) or the same value.
+       */
       const safeArrayEquals = (a, b) => {
         // If both are exactly the same (including both undefined), return true
         if (a === b) return true;
@@ -15001,6 +15975,12 @@ function closePopup(type, options = {}) {
   }
 }
 
+/**
+ * Grid card click: opens the detail view unless a rating link, tooltip or the detail panel
+ * button was clicked.
+ * @param {MouseEvent} event
+ * @param {HTMLElement} element - Clicked card.
+ */
 function handleMediaCardClick(event, element) {
   // Check if the click was on a rating link or tooltip
   if (event.target.closest('.rating-link') || event.target.closest('.ttip-txt')) {
@@ -15018,6 +15998,12 @@ function handleMediaCardClick(event, element) {
   handleDetailView(event, element);
 }
 
+/**
+ * For scaled (non max-size) grids: sets the hovered card's transform origin so it grows away
+ * from viewport edges and scrolls it into view if the scaled card would be cut off.
+ * @param {Event} _event - Hover event (unused).
+ * @param {HTMLElement} card - Hovered media card.
+ */
 function handleResizedGridCardHover(_event, card) {
   const topMenuHeight = 52;
   const scrollPadding = 24;
@@ -15083,7 +16069,11 @@ function handleResizedGridCardHover(_event, card) {
   }, 50);
 }
 
-// Helper function to read file as text
+/**
+ * Reads a File as text.
+ * @param {File} file
+ * @returns {Promise<string>} File content.
+ */
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -15093,6 +16083,12 @@ function readFileAsText(file) {
   });
 }
 
+/**
+ * Parses an IMDb list export (CSV or TSV with a "Const" column, optional Title and Year).
+ * @param {string} content - File content.
+ * @returns {Array<{imdbID:string, title:string, year:string}>}
+ * @throws {Error} If the "Const" column is missing.
+ */
 function processCSVFile(content) {
   const lines = content.split('\n');
 
@@ -15137,7 +16133,11 @@ function processCSVFile(content) {
   return titles;
 }
 
-// Parse a CSV line properly (handling quoted fields)
+/**
+ * Splits one CSV line on commas outside of double quotes.
+ * @param {string} line
+ * @returns {string[]} Field values (quotes removed).
+ */
 function parseCSVLine(line) {
   const result = [];
   let current = '';
@@ -15160,52 +16160,76 @@ function parseCSVLine(line) {
   return result;
 }
 
-// Process text file (one IMDb ID per line)
+/**
+ * Parses a text file with one IMDb ID per line.
+ * @param {string} content - File content.
+ * @returns {Array<{imdbID:string, title:string, year:string}>}
+ */
 function processTXTFile(content) {
   const lines = content.split('\n');
   return lines
     .map(line => line.trim())
-    .filter(line => line && line.startsWith('tt'));
+    .filter(line => line && line.startsWith('tt'))
+    .map(imdbID => ({ imdbID, title: '', year: '' }));
 }
 
-// Process JSON file
+/**
+ * Extracts IMDb IDs from JSON: an array of IDs, {items: [{imdbID}]}, or any string value
+ * starting with "tt" anywhere in the object.
+ * @param {string} content - File content.
+ * @returns {Array<{imdbID:string, title:string, year:string}>}
+ * @throws {Error} On invalid JSON.
+ */
 function processJSONFile(content) {
+  let data;
   try {
-    const data = JSON.parse(content);
-
-    // Handle different JSON formats
-    if (Array.isArray(data)) {
-      // If it's an array, look for IMDb IDs
-      return data
-        .filter(item => typeof item === 'string' && item.startsWith('tt'))
-        .map(id => id);
-    } else if (data.items && Array.isArray(data.items)) {
-      // If it has an 'items' property that's an array
-      return data.items
-        .filter(item => item.imdbID && item.imdbID.startsWith('tt'))
-        .map(item => item.imdbID);
-    } else {
-      // Try to extract IMDb IDs from any object properties
-      const ids = [];
-      const extractIDs = (obj) => {
-        for (const key in obj) {
-          if (typeof obj[key] === 'string' && obj[key].startsWith('tt')) {
-            ids.push(obj[key]);
-          } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-            extractIDs(obj[key]);
-          }
-        }
-      };
-
-      extractIDs(data);
-      return ids;
-    }
+    data = JSON.parse(content);
   } catch {
     throw new Error('Invalid JSON format');
   }
+
+  // Same shape as processCSVFile/processTXTFile, without duplicates
+  const toTitles = ids => [...new Set(ids)].map(imdbID => ({ imdbID, title: '', year: '' }));
+
+  // Handle different JSON formats
+  if (Array.isArray(data)) {
+    // If it's an array, look for IMDb IDs
+    return toTitles(data.filter(item => typeof item === 'string' && item.startsWith('tt')));
+  }
+
+  if (data && Array.isArray(data.items)) {
+    // If it has an 'items' property that's an array
+    return toTitles(data.items
+      .filter(item => typeof item?.imdbID === 'string' && item.imdbID.startsWith('tt'))
+      .map(item => item.imdbID));
+  }
+
+  // Try to extract IMDb IDs from any object properties
+  const ids = [];
+  /**
+   * Recursively collects string values starting with "tt" into `ids`.
+   * @param {Object} obj
+   */
+  const extractIDs = (obj) => {
+    for (const key in obj) {
+      if (typeof obj[key] === 'string' && obj[key].startsWith('tt')) {
+        ids.push(obj[key]);
+      } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+        extractIDs(obj[key]);
+      }
+    }
+  };
+
+  extractIDs(data);
+  return toTitles(ids);
 }
 
-// Main function to show and manage the import dialog
+/**
+ * Shows the import dialog (file selection, target list, new/existing title columns).
+ * @param {?Object[]} [titles=null] - Already parsed titles to show immediately.
+ * @param {string} [listName=''] - Prefilled new list name.
+ * @param {string} [fileName=''] - Name of the imported file.
+ */
 function showImportDialog(titles = null, listName = '', fileName = '') {
   // Create the basic structure first
   const popupContent = `
@@ -15386,8 +16410,16 @@ function showImportDialog(titles = null, listName = '', fileName = '') {
   }, 0);
 }
 
-// Batch add titles function
-async function batchAddTitles(imdbIDs, listName) {
+/**
+ * Adds imported titles (5 in parallel per batch): optionally assigns them to a custom list
+ * (found by ID or label, created if missing), adds missing titles via addTitle, then
+ * updates cache, cards and filters.
+ * @param {string[]} imdbIDs - IMDb IDs to add.
+ * @param {string} listName - Custom list ID or label, or "No List".
+ * @param {string} [description=''] - Description for a newly created list.
+ * @returns {Promise<void>}
+ */
+async function batchAddTitles(imdbIDs, listName, description = '') {
   if (!Array.isArray(imdbIDs) || imdbIDs.length === 0) {
     showNotification('No titles to add', false);
     return;
@@ -15398,15 +16430,12 @@ async function batchAddTitles(imdbIDs, listName) {
   // --- Get or create the custom list and get its UUID ---
   let targetList = null;
   let listId = null;
-  let description = '';
   if (listName && listName !== "No List") {
     // Try to find the list by label (case-insensitive)
     const userLists = await getUserLists(userSettings.username, 'custom');
-    targetList = userLists.find(l => l.label.trim().toLowerCase() === listName.trim().toLowerCase());
-
-    // Get description from input if available
-    const descriptionField = document.getElementById('list-description');
-    description = descriptionField ? descriptionField.value.trim() : '';
+    // listName is either the ID of an existing list (import dialog selector) or the label of a new one
+    targetList = userLists.find(l => l.list === listName) ||
+      userLists.find(l => (l.label || '').trim().toLowerCase() === listName.trim().toLowerCase());
 
     // If not found, create it
     if (!targetList) {
@@ -15515,10 +16544,12 @@ async function batchAddTitles(imdbIDs, listName) {
 }
 
 /**
- * Shows a popup with the specified content
- * @param {string} type - Type of popup (e.g., 'about', 'import', 'settings')
- * @param {string|HTMLElement} content - HTML content or DOM element to show in the popup
- * @param {Object} options - Additional options for the popup
+ * Shows the generic popup with a close button, content, optional styles and listeners.
+ * @param {string} type - Popup type (added as "{type}-popup" class and data-popup-type).
+ * @param {string|HTMLElement} content - HTML string or element.
+ * @param {Object} [options={}] - {hideCloseButton, styles, contentStyles,
+ *   listeners: {selector: {eventName: handler}}}.
+ * @returns {HTMLElement} The popup element.
  */
 function showPopup(type, content, options = {}) {
   const popup = document.getElementById("popup");
@@ -15580,9 +16611,11 @@ function showPopup(type, content, options = {}) {
 }
 
 /**
- * Show Note Editor Popup
- * @param {string} imdbID - The IMDb ID
- * @param {string} title - Movie/Series title
+ * Opens the Markdown note editor (bold/italic/strike/heading toolbar, preview, save and
+ * delete) for the current user's note on a title.
+ * @param {string} imdbID - The IMDb ID.
+ * @param {string} title - Movie/Series title (shown in the header).
+ * @returns {Promise<void>}
  */
 async function showNoteEditorPopup(imdbID, title) {
 
@@ -15716,9 +16749,9 @@ async function showNoteEditorPopup(imdbID, title) {
 }
 
 /**
- * Get note for a movie/series
- * @param {string} imdbID - The IMDb ID
- * @returns {Promise<Object|null>} - Note object or null if not found
+ * Gets the current user's note for a title.
+ * @param {string} imdbID - The IMDb ID.
+ * @returns {Promise<Object|null>} Note record ({id, imdbID, username, content, timestamp, modified}) or null.
  */
 async function getNote(imdbID) {
   return new Promise((resolve, reject) => {
@@ -15739,10 +16772,10 @@ async function getNote(imdbID) {
 }
 
 /**
- * Add or update note for a movie/series
- * @param {string} imdbID - The IMDb ID
- * @param {string} content - Note content
- * @returns {Promise<number>} - Note ID
+ * Creates or updates the current user's note for a title.
+ * @param {string} imdbID - The IMDb ID.
+ * @param {string} content - Note content (Markdown).
+ * @returns {Promise<number>} The note ID.
  */
 async function saveNote(imdbID, content) {
   return new Promise((resolve, reject) => {
@@ -15802,9 +16835,9 @@ async function saveNote(imdbID, content) {
 }
 
 /**
- * Delete note for a movie/series
- * @param {string} imdbID - The IMDb ID
- * @returns {Promise<boolean>} - Success or failure
+ * Deletes the current user's note for a title.
+ * @param {string} imdbID - The IMDb ID.
+ * @returns {Promise<boolean>} true if a note was deleted, false if none existed.
  */
 async function deleteNote(imdbID) {
   return new Promise((resolve, reject) => {
@@ -15842,9 +16875,10 @@ async function deleteNote(imdbID) {
 }
 
 /**
- * Handle note media button click
- * @param {Event} event - The click event
- * @param {HTMLElement} element - The clicked element
+ * Note button click: opens the note editor for the card/detail view.
+ * @param {Event} event - The click event.
+ * @param {HTMLElement} element - The clicked element.
+ * @returns {Promise<void>}
  */
 async function handleNoteMedia(event, element) {
   event.preventDefault();
@@ -15883,9 +16917,10 @@ function updateNoteIconStatus(imdbID, hasNote) {
 }
 
 /**
- * Simple Markdown Parser
- * @param {string} text - Markdown text
- * @returns {string} - HTML output
+ * Minimal Markdown renderer for notes (bold, italic, strikethrough, headings, http(s)/mailto
+ * links, line breaks). Input HTML is escaped first.
+ * @param {string} text - Markdown text.
+ * @returns {string} HTML output.
  */
 function parseMarkdown(text) {
   if (!text) return '';
@@ -15894,7 +16929,16 @@ function parseMarkdown(text) {
   let html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  // Links: [title](url) - only http(s)/mailto targets (no javascript: etc.). Links are swapped
+  // for placeholders first so the emphasis rules below can't mangle underscores in URLs.
+  const links = [];
+  html = html.replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/g, (_, title, url) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>`);
+    return `\u0000${links.length - 1}\u0000`;
+  });
 
   // Bold: **text** or __text__
   html = html.replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>');
@@ -15910,8 +16954,8 @@ function parseMarkdown(text) {
   html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
   html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
 
-  // Links: [title](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // Restore links
+  html = html.replace(/\u0000(\d+)\u0000/g, (_, index) => links[Number(index)]);
 
   // Line breaks
   html = html.replace(/\n/g, '<br>');
@@ -15919,6 +16963,10 @@ function parseMarkdown(text) {
   return html;
 }
 
+/**
+ * Replaces the page with a fatal initialization error message.
+ * @param {Error} error - The error that stopped initialization.
+ */
 function displayInitializationError(error) {
   // Implement UI to show a critical error message
   const body = document.body;
@@ -15930,10 +16978,11 @@ function displayInitializationError(error) {
 }
 
 /**
- * Loads critical data (user settings, list configs) after DB is open.
- * Determines if initial user setup is required.
+ * Loads critical data after the DB is open: the last used profile (from localStorage,
+ * falling back to the first profile), list configurations and missing core lists, and
+ * initializes the API key manager. Determines whether initial setup is required.
  * @param {IDBDatabase} dbConn - The opened DB connection.
- * @returns {Promise<{setupNeeded: boolean}>} - Status indicating if initial setup is required.
+ * @returns {Promise<{setupNeeded: boolean}>} Whether the first-run setup must be shown.
  */
 async function loadCoreAppData(dbConn) {
   // 1. Try to get username hint from localStorage
@@ -16110,7 +17159,7 @@ async function loadCoreAppData(dbConn) {
       if (userCoreLists.length < 4) { // Expected 4 core lists
         await setupUserCoreLists(userSettings.username);
         // Reload lists after creating them
-        const updatedLists = await getUserLists(userSettings.username, "custom");
+        const updatedLists = await getUserLists(userSettings.username, "core");
         // Update listsMap with the newly created lists
         updatedLists.forEach(list => {
           listsMap[list.list] = list;
@@ -16132,6 +17181,13 @@ async function loadCoreAppData(dbConn) {
   }
 }
 
+/**
+ * Creates the user's missing core lists (watchlist, collection, favourites, watched) by
+ * cloning the 'default' core list templates. Existing core lists are left untouched.
+ * @param {string} newUsername - Profile name.
+ * @returns {Promise<void>}
+ * @throws Re-throws database errors.
+ */
 async function setupUserCoreLists(newUsername) {
   try {
     // Get all default core lists
@@ -16144,11 +17200,17 @@ async function setupUserCoreLists(newUsername) {
       request.onerror = () => reject(request.error);
     }));
 
-    // Clone each core list for the new user
+    // Core lists the user already has (e.g. created on the fly by toggleListMembership) must be
+    // skipped: add() would fail with a ConstraintError and abort the whole setup.
+    const existingCoreLists = new Set(
+      (await getUserLists(newUsername, "core")).map(list => list.list)
+    );
+
+    // Clone each missing core list for the new user
     const writeTransaction = db.transaction(["lists_metadata"], "readwrite");
     const writeStore = writeTransaction.objectStore("lists_metadata");
 
-    const promises = defaultCoreLists.map(template => {
+    const promises = defaultCoreLists.filter(template => !existingCoreLists.has(template.list)).map(template => {
       // Create a new core list for this user based on the template
       const userCoreList = {
         ...template,
@@ -16182,6 +17244,10 @@ async function setupUserCoreLists(newUsername) {
   }
 }
 
+/**
+ * Registers (or updates) the service worker when served over http(s) and schedules an
+ * hourly cache cleanup message to it.
+ */
 function registerServiceWorker() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     // Check if document is already loaded
@@ -16196,6 +17262,7 @@ function registerServiceWorker() {
     console.log('Service Workers not supported or running from file:// protocol');
   }
 
+  /** Registers sw.js, or checks an existing registration for updates. */
   function registerSW() {
     navigator.serviceWorker.getRegistration()
       .then(reg => {
@@ -16227,6 +17294,10 @@ function registerServiceWorker() {
       });
   }
 
+  /**
+   * Posts a 'cleanupCache' message to the active service worker every hour.
+   * @param {ServiceWorkerRegistration} registration
+   */
   function initializePeriodicCleanup(registration) {
     // Initialize periodic cleanup
     setInterval(() => {
@@ -16239,6 +17310,7 @@ function registerServiceWorker() {
   }
 }
 
+/** @returns {boolean} true on touch-capable devices. */
 function isTouchDevice() {
   return (
     'ontouchstart' in window ||
@@ -16247,6 +17319,11 @@ function isTouchDevice() {
   );
 }
 
+/**
+ * Opens a person's IMDb (or TMDB) page when their card is clicked (desktop only).
+ * @param {Event} _event - Click event (unused).
+ * @param {HTMLElement} card - Person card (data-imdb-link).
+ */
 function handlePersonCardClick(_event, card) {
   if (isTouchDevice()) return;
   const imdbLink = card.getAttribute('data-imdb-link');
@@ -16255,6 +17332,11 @@ function handlePersonCardClick(_event, card) {
   }
 }
 
+/**
+ * Touch handler for list filter icons, de-duplicated against a following click (500ms).
+ * @param {TouchEvent} e
+ * @param {HTMLElement} el - Filter icon.
+ */
 function touchFilterHandler(e, el) {
   // Prevent duplicate handling (guard against both click and touchend firing)
   if (el._lastTouch && Date.now() - el._lastTouch < 500) return;
@@ -16262,12 +17344,26 @@ function touchFilterHandler(e, el) {
   toggleListFilter(e, el);
 }
 
+/**
+ * Touch handler for the watched filter icon, de-duplicated against a following click (500ms).
+ * @param {TouchEvent} e
+ * @param {HTMLElement} el - Watched filter icon.
+ */
 function touchWatchedHandler(e, el) {
   if (el._lastTouch && Date.now() - el._lastTouch < 500) return;
   el._lastTouch = Date.now();
   cycleWatchedFilter(e, el);
 }
 
+/**
+ * Renders the custom list dropdown panel.
+ * - 'list': list pills with item counts (click = filter, edit/delete zones) and an add pill
+ * - 'add': form to create a list
+ * - 'edit': form to rename/describe lists[0]
+ * @param {'list'|'add'|'edit'} [mode='list'] - Panel mode.
+ * @param {?Object[]} [lists=null] - Custom list metadata (loaded when omitted).
+ * @returns {Promise<void>}
+ */
 async function showCustomListPanel(mode = 'list', lists = null) {
   const panel = document.getElementById('customlist-dropdown-panel');
   if (!panel) return;
@@ -16280,6 +17376,7 @@ async function showCustomListPanel(mode = 'list', lists = null) {
     lists = (await getUserLists(userSettings.username, 'custom')) || [];
   }
 
+  /** Reloads custom lists into customListsMeta and re-renders the panel in list mode. */
   async function reloadListPanel() {
     const freshLists = await getUserLists(userSettings.username, 'custom');
     // Update the global customListsMeta variable
@@ -16287,7 +17384,7 @@ async function showCustomListPanel(mode = 'list', lists = null) {
     showCustomListPanel('list', freshLists);
 }
 
-  // Helper to close panel
+  /** Hides the panel and updates the custom list filter icon state. */
   function closePanel() {
     panel.classList.add('hidden');
     updateFilterButtonState(document.getElementById('customlist-filter-icon'));
@@ -16506,6 +17603,11 @@ async function showCustomListPanel(mode = 'list', lists = null) {
   panel.classList.remove('hidden');
 }
 
+/**
+ * Checks whether a name matches a core list key or label (case-insensitive).
+ * @param {string} listName - List name.
+ * @returns {boolean}
+ */
 function isCoreList(listName) {
   if (!listName) return false;
   
@@ -16525,8 +17627,9 @@ function isCoreList(listName) {
   return false;
 }
 
-/** 
- * Helper to generate UUIDs for custom lists
+/**
+ * Generates a random UUID v4 used as custom list ID.
+ * @returns {string} UUID.
  */
 function generateListId() {
   // Fast, standards-compliant UUID v4
@@ -16535,7 +17638,7 @@ function generateListId() {
   );
 }
 
-// Function to handle app installed state
+/** Hides the install button once the PWA has been installed. */
 function handleAppInstalled() {
   // Hide the install button
   const installButton = document.getElementById('install-button');
@@ -16578,8 +17681,11 @@ function generateCustomLinksHtml(mediaData) {
     .join('');
 }
 
-// --- MAIN LINK FUNCTION ---
-
+/**
+ * Classifies a link URL: http(s) -> 'web', smb:/file:/ftp:/ftps: -> 'local'.
+ * @param {string} url - Link URL.
+ * @returns {'web'|'local'} Link type ('web' for anything unrecognized).
+ */
 function detectLinkType(url) {
   if (!url || typeof url !== 'string') return 'web';
   const trimmed = url.trim();
@@ -16588,11 +17694,21 @@ function detectLinkType(url) {
   return 'web';
 }
 
+/**
+ * @param {{linkText?:string}} link - Link record.
+ * @param {number} index - Position in the list.
+ * @returns {string} The link text, or "Link {index+1}".
+ */
 function getLinkDisplayText(link, index) {
   const text = (link.linkText || '').trim();
   return text || `Link ${index + 1}`;
 }
 
+/**
+ * Returns links sorted by creation time, then naturally by link text.
+ * @param {Object[]} links - Link records.
+ * @returns {Object[]} Sorted copy.
+ */
 function sortLinksByCreatedAt(links) {
   return [...links].sort((a, b) => {
     const aTime = Number(a?.createdAt || 0);
@@ -16606,6 +17722,14 @@ function sortLinksByCreatedAt(links) {
   });
 }
 
+/**
+ * Opens the inline link editor for a title: lists its links with editable URL/text cells,
+ * add and delete actions; every change is saved to the 'links' store and reflected in the
+ * card tooltips.
+ * @param {string} imdbID - IMDb ID.
+ * @param {string} [mediaTitle=""] - Title shown in the header.
+ * @returns {Promise<void>}
+ */
 async function showLinkEditor(imdbID, mediaTitle = "") {
   const links = await (async () => {
     const tx = db.transaction('links', 'readonly');
@@ -16646,12 +17770,22 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
     });
   })();
 
+  /**
+   * @param {string} url
+   * @returns {boolean} true for http(s), smb:, file:, ftp: and ftps: URLs.
+   */
   function isValidLinkUrl(url) {
     if (!url || typeof url !== 'string') return false;
     const trimmed = url.trim();
     return /^https?:\/\//i.test(trimmed) || /^(smb:|file:|ftp:|ftps:)/i.test(trimmed);
   }
 
+  /**
+   * Saves a link (replacing the old record when its URL or type changed).
+   * @param {Object} link - Link to save ({url, linkText, type, createdAt}).
+   * @param {?Object} [oldLink=null] - Previous version of the link.
+   * @returns {Promise<boolean>}
+   */
   async function saveLinkEntry(link, oldLink = null) {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['links'], 'readwrite');
@@ -16675,6 +17809,11 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
     });
   }
 
+  /**
+   * Deletes a link record.
+   * @param {Object} link - Link ({url, type}).
+   * @returns {Promise<boolean>}
+   */
   async function deleteLinkEntry(link) {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['links'], 'readwrite');
@@ -16686,6 +17825,7 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
     });
   }
 
+  /** @returns {string} HTML rows for all links (or a "No links" row). */
   function renderRows() {
     if (!links.length) {
         return `<div class="link-row no-links">No links added yet.</div>`;
@@ -16716,17 +17856,20 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
       }).join('');
   }
 
+  /** @returns {string} Media type of the title's grid card ('movie' if not rendered). */
   function getMediaType() {
     const mediaCard = document.querySelector(`.media-card[data-imdbid="${imdbID}"]`);
     return mediaCard ? mediaCard.dataset.mediaType : 'movie';
   }
 
+  /** Refreshes the title's cache entry and the link lists in its tooltips. */
   async function refreshTooltips() {
     const mediaType = getMediaType();
     await updateCache(imdbID, db, mediaType);
     refreshUrlLinksInTooltips([imdbID]);
   }
 
+  /** Renders (or re-renders) the link editor popup and wires its handlers. */
   function render() {
     const html = `
       <div class="import-dialog">
@@ -17078,6 +18221,11 @@ async function showLinkEditor(imdbID, mediaTitle = "") {
   render();
 }
 
+/**
+ * Rebuilds the link list (JustWatch, custom links, trailers) inside the tooltips of the given
+ * titles after refreshing their cache entries.
+ * @param {string[]} [imdbIDs=[]] - IMDb IDs whose cards should be updated.
+ */
 function refreshUrlLinksInTooltips(imdbIDs = []) {
   // If no imdbIDs provided, do nothing
   if (!imdbIDs || imdbIDs.length === 0) return;
@@ -17134,7 +18282,13 @@ function refreshUrlLinksInTooltips(imdbIDs = []) {
   });
 }
 
-// Search function that supports user-defined URL to search for imdbID, title or search term
+/**
+ * Opens the user-defined search URL for a title. Supports the placeholders {imdbID}, {title}
+ * and {searchTerm} (and legacy ${encodeURIComponent(...)} templates); without placeholders
+ * the IMDb ID is appended as query parameter. Opens settings if no URL is configured.
+ * @param {string} searchTerm - Search term (usually the IMDb ID).
+ * @param {?string} [title=null] - Title of the media.
+ */
 function searchWeb(searchTerm, title = null) {
     let template = (userSettings && userSettings.searchURL) ? (userSettings.searchURL || '').trim() : '';
     if (!template) {
@@ -17187,7 +18341,9 @@ function searchWeb(searchTerm, title = null) {
 }
 
 /**
- * MAJOR DOM
+ * Main entry point: initializes the application, runs a due scheduled backup and registers
+ * the global delegated event handlers (click, mouseover, touch, keyboard shortcuts) and the
+ * PWA install prompt handling.
  */
 document.addEventListener("DOMContentLoaded", async () => {
   try {
